@@ -25,6 +25,7 @@ def simulate_unpack(update_fn, internal_state, load, params):
     fields_ts, state_ts, logs_ts = saved["fields"], saved["state"], saved["logs"]
     return state_T, fields_ts, state_ts, logs_ts
 
+# depreciated as does not handle implicit differentiation due parameters being closed over in newton
 @partial(jax.jit, static_argnames=("make_newton",))
 def make_simulate_unpack(make_newton, internal_state, load, params):
     
@@ -44,24 +45,26 @@ def make_simulate_unpack(make_newton, internal_state, load, params):
     return state_T, fields_ts, state_ts, logs_ts 
 
 @partial(jax.jit, static_argnames=("make_newton",))
+@partial(jax.jit, static_argnames=("make_newton",))
 def make_simulate_unpack(make_newton, internal_state, load, params):
 
     def constitutive_update_fn(state_old, step_load, params_in,
-                               alg={"tol": 1e-8, "abs_tol": 1e-12, "max_it": 100}):
-        # 1) Build init/unpack with the *current* params (any version is fine; unpack doesn’t depend on params)
+                               alg={"tol":1e-8, "abs_tol":1e-12, "max_it":100}):
+
+        # Build init/unpack once (ok to close over, not differentiated)
         residuals0, initialize, unpack = make_newton(state_old, step_load, params_in)
         x0 = initialize()
 
-        # 2) Make a residual that takes params as an *explicit* argument
-        def residuals_parametric(x, params_dyn):
-            residuals_dyn, _, _ = make_newton(state_old, step_load, params_dyn)
+        # Residual that does NOT close over traced values:
+        def residuals_parametric(x, state_arg, load_arg, params_arg):
+            residuals_dyn, _, _ = make_newton(state_arg, load_arg, params_arg)
             return residuals_dyn(x)
 
-        # 3) Call the implicit Newton, passing params as dyn_args  (=> gradients flow to params)
+        # IMPORTANT: pass state_old & step_load as part of dyn_args
         x_sol, iters = newton_implicit_unravel(
-            residuals_parametric,          # residual fn (nondiff arg)
-            x0,                            # diff arg
-            (params_in,),                  # <- dyn_args carries params explicitly
+            residuals_parametric,
+            x0,
+            (state_old, step_load, params_in),  # <- all explicit
             tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
         )
 
@@ -69,7 +72,6 @@ def make_simulate_unpack(make_newton, internal_state, load, params):
         logs = {"conv": jnp.asarray(iters)}
         return new_state, fields, logs
 
-    # time stepping
     def step(state, step_load):
         state, field, logs = constitutive_update_fn(state, step_load, params)
         return state, (state, field, logs)
