@@ -7,7 +7,7 @@ config.update("jax_enable_x64", True)
 import time
 import matplotlib.pyplot as plt
 
-from simulation.simulate import simulate_make_unpack
+from simulation.simulate import make_simulate_unpack
 from simulation.algebra import dev_voigt, norm_voigt
 
 from simulation.algebra import voigt_to_tensor, tensor_to_voigt
@@ -104,7 +104,7 @@ print("epsilon_ts.dtype",epsilon_ts.dtype)
 load_ts={"epsilon": epsilon_ts}
 
 state0 = {"epsilon_p": jnp.zeros(6), "p": jnp.array(0.0)}
-state_T, fields_ts, state_ts, logs_ts = simulate_make_unpack(make_newton,state0, load_ts, params)
+state_T, fields_ts, state_ts, logs_ts = make_simulate_unpack(make_newton,state0, load_ts, params)
 
 print("iteration count (first 100)",logs_ts["conv"][:100])
 
