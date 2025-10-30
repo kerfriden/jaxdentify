@@ -14,6 +14,8 @@ from simulation.newton import newton_unravel
 
 
 
+
+
 def C_iso_voigt(E, nu):
     mu  = E / (2.0 * (1.0 + nu))
     lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
@@ -37,31 +39,22 @@ def vm(sigma):
 def f_func(sigma, p, params):
     return vm(sigma) - (params["sigma_y"] + R_iso(p, params))
 
-#grad_f_wrt_sigma = jax.grad(lambda sigma, p, params: f_func(sigma, p, params), argnums=0)
-
-# ----------------- constitutive residuals (dict in/out) -----------------
 def residuals(x, epsilon, state_old, params):
 
     C = C_iso_voigt(params["E"], params["nu"])
     sigma, eps_p, p = x["sigma"], x["eps_p"], x["p"]
     eps_p_old, p_old = state_old["epsilon_p"], state_old["p"]
 
-    # 1) relation élastique
     res_sigma = sigma - C @ (epsilon - eps_p)
 
-    # 2) direction de flux par autodiff (comme “celui-là converge”)
     df_dsigma = jax.grad(lambda s: f_func(s, p, params))(sigma)
-    # pas de projection supplémentaire ici (reste fidèle à la version qui marche)
 
-    # 3) écoulement associé + cumul de plasticité
     res_epsp  = (eps_p - eps_p_old) -(p - p_old) * df_dsigma
 
-    # 4) consistance plastique vs. γ=0 élastique
     res_p = f_func(sigma, p, params)
 
     return {"res_sigma": res_sigma, "res_epsp": res_epsp, "res_p": res_p}
 
-# ----------------- constitutive update (pure function) -----------------
 def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "abs_tol":1e-12, "max_it":100}):
 
     C = C_iso_voigt(params["E"], params["nu"])
@@ -73,7 +66,7 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     f_trial     = f_func(sigma_trial, p_old, params)
     dtype       = sigma_trial.dtype
 
-    it_dtype = jnp.int32  # <- unifie le dtype des itérations
+    it_dtype = jnp.int32 
 
     def elastic_branch(_):
         new_state = {"epsilon_p": eps_p_old, "p": p_old}
@@ -104,6 +97,14 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     )
     return new_state, fields, logs
 
+
+
+
+
+
+
+
+
 # material params
 E, nu = 1.0, 0.3
 params = {
@@ -125,16 +126,6 @@ epsilon_ts = (jnp.zeros((n_ts, 6))
 
 print("epsilon_ts.dtype",epsilon_ts.dtype)
 
-#load_list = [
-#    {"t": ts[i],
-#     "epsilon": epsilon_ts[i],
-#     }
-#    for i in range(len(ts))
-#]
-#def stack_load_list(load_list):
-#    Turn list[dict(arrays)] -> dict(arrays with leading time dim)
-#    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *load_list)
-#load = stack_load_list(load_list)
 load_ts={"epsilon": epsilon_ts}
 
 # initial state

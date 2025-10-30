@@ -45,7 +45,9 @@ def constitutive_update_fn(state_old, step_load, params):
     logs = {}
     return new_state, fields, logs
 
-# ----------------- example usage -----------------
+
+
+
 
 # material params
 E, nu = 1.0, 0.3
@@ -63,20 +65,6 @@ ts = jnp.linspace(0., 1., n_ts)
 eps_xx = 4.0 * jnp.sin(ts * 30.0)
 eps_xx = 4.0 * jnp.sin( ts * 30.0)
 epsilon_ts = (jnp.zeros((len(ts), 6)).at[:, 0].set(eps_xx))
-
-#load_list = [
-#    {
-#        "t": ts[i],
-#        "delta_t": (ts[i] - ts[i-1]) if i > 0 else 1./(ts[1] - ts[0])*(ts[1] - ts[0]),
-#        "epsilon": epsilon_ts[i],
-#        "delta_epsilon": (epsilon_ts[i] - epsilon_ts[i-1]) if i > 0 else jnp.zeros(6),
-#    }
-#    for i in range(len(ts))
-#]
-#def stack_load_list(load_list):
-#    # Turn list[dict(arrays)] -> dict(arrays with leading time dim)
-#    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *load_list)
-#load = stack_load_list(load_list)
 
 # Δt: first step = ts[1] - ts[0], then forward differences
 dt0 = ts[1] - ts[0]

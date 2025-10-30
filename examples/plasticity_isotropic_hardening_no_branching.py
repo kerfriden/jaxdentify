@@ -96,7 +96,10 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     new_state, fields, logs = unpack(x_sol, iters)
     return new_state, fields, logs
 
-from dataclasses import fields
+
+
+
+
 # material params
 E, nu = 1.0, 0.3
 params = {
@@ -116,20 +119,10 @@ epsilon_ts = (jnp.zeros((n_ts, 6))
               .at[:, 1].set(-0.5 * eps_xx)
               .at[:, 2].set(-0.5 * eps_xx))
 
-print("epsilon_ts.dtype",epsilon_ts.dtype)
-
 load_ts={"epsilon": epsilon_ts}
 
 state0 = {"epsilon_p": jnp.zeros(6), "p": jnp.array(0.0)}
 state_T, fields_ts, state_ts, logs_ts = simulate_unpack(constitutive_update_fn,state0, load_ts, params)
-
-# quick checks
-print("Final p:", state_T["p"])
-print("Hist sigma shape:", fields_ts["sigma"].shape)
-print("Hist eps_p shape:", state_ts["epsilon_p"].shape)
-print("Hist p shape:", state_ts["p"].shape)
-
-#plot_stress_strain(saved, load, comp=0)
 
 print("iteration count (first 100)",logs_ts["conv"][:100])
 
