@@ -1,0 +1,14 @@
+# Python build artifacts
+*.egg-info/
+build/
+dist/
+
+# Bytecode
+__pycache__/
+*.pyc
+
+# Test cache
+.pytest_cache/
+
+# Virtualenvs
+.venv/
