@@ -6,7 +6,7 @@ from jax.scipy.linalg import solve as la_solve
 
 from functools import partial
 
-from simulation.newton import newton_unravel
+from simulation.newton import newton_implicit_unravel
 
 # ----------------- simulate (functional; takes state, load, params) -----------------
 @partial(jax.jit, static_argnames=("update_fn",))
