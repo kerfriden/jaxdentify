@@ -41,4 +41,4 @@ def simulate_make_unpack(make_newton, internal_state, load, params):
 
     state_T, saved = simulate(constitutive_update_fn, internal_state, load, params)
     fields_ts, state_ts, logs_ts = saved["fields"], saved["state"], saved["logs"]
-    return state_T, fields_ts, state_ts, logs_ts
+    return state_T, fields_ts, state_ts, logs_ts 
