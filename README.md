@@ -2,7 +2,8 @@
 
 ---
 
-quick demo on Colab : https://colab.research.google.com/github/kerfriden/jaxdentify/blob/main/jax_cl_4.ipynb
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kerfriden/jaxdentify/blob/main/demo.ipynb)
+
 
 ---
 
