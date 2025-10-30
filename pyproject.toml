@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaxdentify"
+version = "0.0.1"
+description = "material simulation and parameter identification toolbox"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Pierre Kerfriden" }]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["simulation", "simulation.*", "optimization", "optimization.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
