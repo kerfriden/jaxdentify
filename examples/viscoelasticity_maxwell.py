@@ -50,7 +50,6 @@ def constitutive_update_fn(state_old, step_load, params):
 
 
 # material params
-E, nu = 1.0, 0.3
 params = {
     "K": 1.0,
     "G": 1.0,

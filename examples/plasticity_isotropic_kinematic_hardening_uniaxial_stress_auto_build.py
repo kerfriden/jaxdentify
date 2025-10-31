@@ -103,7 +103,6 @@ def make_newton(state_old, step_load, params):
 
 
 # material params
-E, nu = 1.0, 0.3
 params = {
     "sigma_y": 1.0,
     "Q": 1.0,
