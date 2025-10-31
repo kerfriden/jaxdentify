@@ -1,9 +1,8 @@
 # JAX for Constitutive Laws — User Guide
 
----
+--- 
 
 [![Open demo in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kerfriden/jaxdentify/blob/main/demo.ipynb)
-
 
 ---
 
