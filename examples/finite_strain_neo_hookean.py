@@ -115,20 +115,6 @@ lam_x = 1.0 + 5. * ts        # or 1.0 + 0.15*jnp.sin(2*jnp.pi*ts)
 F_hist = jnp.tile(0.2*jnp.eye(3, dtype=jnp.float64), (len(ts), 1, 1))
 F_hist = F_hist.at[:, 0, 0].set(lam_x)
 
-#load_list = [
-#    {
-#        "t": ts[i],
-#        "F": F_hist[i],              # interpreted as F
-#        "sigma_cstr_idx": sigma_cstr_idx,  # [1,2,3,4,5]
-#        "F_cstr_idx": F_cstr_idx,          # [4,8,1,2,5]
-#    }
-#    for i in range(n_ts)
-#]
-#load = stack_load_list(load_list)
-#def stack_load_list(load_list):
-#    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *load_list)
-#load = stack_load_list(load_list)
-
 load_ts = {
     "t": ts,
     "F": F_hist,
@@ -138,18 +124,14 @@ load_ts = {
 
 # ----- run -----
 state0 = {"F_eff": jnp.eye(3, dtype=F_hist.dtype)}
-#state_T, saved = simulate(constitutive_update_fn, state0, load, params)
 state_T, fields_ts, state_ts, logs_ts = simulate_unpack(constitutive_update_fn,state0, load_ts, params)
 
 print("iters (first 10):", logs_ts["conv"][:10])
 print("first 3 solved [F_yy, F_zz, F_xy, F_xz, F_yz]:\n", fields_ts["F_eff"][:3])
 
-#print("saved[fields][F_eff][:,0,0]",saved["fields"]["F_eff"][:,0,0])
-#print("first 3 stress", saved["fields"]["sigma"][:3])
-#print("saved_nhF[fields][sigma][:,0]",saved["fields"]["sigma"][:,0])
-
 plt.plot(fields_ts["F_eff"][:,0,0],fields_ts["sigma"][:,0])
 plt.grid()
 plt.xlabel(r"$F_{11}$")
 plt.ylabel(r"$\sigma_{11}$")
+
 plt.show()

@@ -87,6 +87,6 @@ state_T, fields_ts, state_ts, logs_ts = simulate_unpack(constitutive_update_fn,s
 eps11 = jnp.array(load_ts["epsilon"][:,0])
 plt.plot(eps11,fields_ts["sigma"][:,0])
 plt.grid()
-plt.xlabel(r"$F_{11}$")
+plt.xlabel(r"$\epsilon_{11}$")
 plt.ylabel(r"$\sigma_{11}$")
 plt.show()
