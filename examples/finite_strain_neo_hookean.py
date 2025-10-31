@@ -22,13 +22,6 @@ def lame_from_E_nu(E, nu):
     lam = E*nu / ((1.0 + nu)*(1.0 - 2.0*nu))
     return lam, mu
 
-#def _ensure_F(F_like):
-#    """Accept F as (3,3) or flat (9,) and return (3,3)."""
-#    F_like = jnp.asarray(F_like)
-#    if F_like.ndim == 1:
-#        return F_like.reshape(3,3)
-#    return F_like
-
 def psi_neo_hooke(F, params):
     """
     Compressible Neo-Hookean potential (Simo style):
@@ -45,12 +38,10 @@ def psi_neo_hooke(F, params):
 
 def P_from_F(F, params):
     """First Piola-Kirchhoff stress P = ∂ψ/∂F, via JAX autodiff."""
-    #F = _ensure_F(F)
     grad_fun = jax.grad(lambda F_: psi_neo_hooke(F_, params))
     return grad_fun(F)
 
 def cauchy_from_F(F, params):
-    #F = _ensure_F(F)
     P = P_from_F(F, params)
     J = jnp.linalg.det(F)
     Js = jnp.clip(J, a_min=1e-16)
@@ -59,7 +50,6 @@ def cauchy_from_F(F, params):
 
 # ---------- Residuals: solve for selected entries of F so that σ[idx] = 0 ----------
 def _set_F_entries(F, flat_indices, values):
-    #F = _ensure_F(F)
     Ff = F.reshape(-1)
     Ff = Ff.at[flat_indices].set(values)
     return Ff.reshape(3,3)

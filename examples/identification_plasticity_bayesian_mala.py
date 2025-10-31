@@ -190,7 +190,7 @@ state_T, saved = simulate(constitutive_update_fn,state0, load_ts, params)
 eps11 = jnp.array(load_ts["epsilon"][:,0])
 plt.plot(eps11,saved["fields"]["sigma"][:,0])
 plt.grid()
-plt.xlabel(r"$F_{11}$")
+plt.xlabel(r"$\epsilon_{11}$")
 plt.ylabel(r"$\sigma_{11}$")
 plt.show()
 
