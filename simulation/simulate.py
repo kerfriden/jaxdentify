@@ -45,7 +45,6 @@ def make_simulate_unpack(make_newton, internal_state, load, params):
     return state_T, fields_ts, state_ts, logs_ts 
 
 @partial(jax.jit, static_argnames=("make_newton",))
-@partial(jax.jit, static_argnames=("make_newton",))
 def make_simulate_unpack(make_newton, internal_state, load, params):
 
     def constitutive_update_fn(state_old, step_load, params_in,
@@ -69,6 +68,51 @@ def make_simulate_unpack(make_newton, internal_state, load, params):
         )
 
         new_state, fields = unpack(x_sol)
+        logs = {"conv": jnp.asarray(iters)}
+        return new_state, fields, logs
+
+    def step(state, step_load):
+        state, field, logs = constitutive_update_fn(state, step_load, params)
+        return state, (state, field, logs)
+
+    state_T, (states_hist, fields_hist, logs_hist) = lax.scan(step, internal_state, load)
+    return state_T, fields_hist, states_hist, logs_hist
+
+# simulation/simulate_utils.py
+def make_state_based_unpacker(state_template):
+    state_keys = set(state_template.keys())
+    def unpack(x):
+        state  = {k: x[k] for k in state_keys}
+        fields = {k: v for k, v in x.items() if k not in state_keys}
+        return state, fields
+    return unpack
+
+@partial(jax.jit, static_argnames=("make_newton",))
+def make_simulate_auto_unpack(make_newton, internal_state, load, params):
+
+    def constitutive_update_fn(state_old, step_load, params_in,
+                               alg={"tol":1e-8, "abs_tol":1e-12, "max_it":100}):
+
+        # Build initialize once (ok to close over)
+        residuals0, initialize = make_newton(state_old, step_load, params_in)
+        x0 = initialize()
+
+        # Residual that re-instantiates from explicit dyn args (safe for AD)
+        def residuals_parametric(x, state_arg, load_arg, params_arg):
+            residuals_dyn, _ = make_newton(state_arg, load_arg, params_arg)
+            return residuals_dyn(x)
+
+        x_sol, iters = newton_implicit_unravel(
+            residuals_parametric,
+            x0,
+            (state_old, step_load, params_in),
+            tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
+        )
+
+        # Auto-split x into (state, fields) by matching state_old keys
+        unpack = make_state_based_unpacker(state_old)
+        new_state, fields = unpack(x_sol)
+
         logs = {"conv": jnp.asarray(iters)}
         return new_state, fields, logs
 
