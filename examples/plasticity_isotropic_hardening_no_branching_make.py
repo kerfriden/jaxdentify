@@ -76,7 +76,8 @@ def make_newton(state_old, step_load, params):
     
     return residuals, initialize, unpack
 
-
+def initialize_state():
+    return {"epsilon_p": jnp.zeros(6,), "p": jnp.array(0.0)}
 
 
 
@@ -103,7 +104,7 @@ print("epsilon_ts.dtype",epsilon_ts.dtype)
 
 load_ts={"epsilon": epsilon_ts}
 
-state0 = {"epsilon_p": jnp.zeros(6), "p": jnp.array(0.0)}
+state0 = initialize_state()
 state_T, fields_ts, state_ts, logs_ts = make_simulate_unpack(make_newton,state0, load_ts, params)
 
 print("iteration count (first 100)",logs_ts["conv"][:100])
