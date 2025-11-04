@@ -6,6 +6,10 @@
 
 ---
 
+Installation pip install -q git+https://github.com/kerfriden/jaxdentify@main
+
+---
+
 ## Contents
 
 - [Overview](#overview)
