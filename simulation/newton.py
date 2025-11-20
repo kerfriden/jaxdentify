@@ -137,23 +137,6 @@ newton_implicit.defvjp(_newton_fwd, _newton_bwd)
 #newton_implicit_jit = jax.jit(newton_implicit, static_argnums=(0,))
 
 # ----------------- dict/PyTree wrapper around array Newton (depreciated) -----------------
-def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args, tol=1e-6, abs_tol=1e-8, max_iter=100):
-    """
-    residual_fn_pytree(x_tree, *dyn_args) -> residual_tree (same PyTree structure)
-    x0_tree: PyTree (dicts, arrays…)
-    Returns: (x_tree_solution, iters)
-    """
-    x0_flat, unravel_x = ravel_pytree(x0_tree)
-
-    def res_flat(x_flat, *dyn):
-        x_tree = unravel_x(x_flat)
-        r_tree = residual_fn_pytree(x_tree, *dyn)
-        r_flat, _ = ravel_pytree(r_tree)
-        return r_flat
-
-    x_fin_flat, iters = newton_implicit(res_flat, x0_flat, dyn_args, tol, abs_tol, max_iter)
-    x_fin_tree = unravel_x(x_fin_flat)
-    return x_fin_tree, iters
 
 from jax import tree_util as jtu
 def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
