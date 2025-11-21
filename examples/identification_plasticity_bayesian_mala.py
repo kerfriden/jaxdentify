@@ -250,7 +250,9 @@ def loglik(theta):
     # Drop the normalization constant (it doesn't depend on theta and cancels in MALA/MH).
     # i.i.d. N(0, σ^2): log p(y|θ,σ) = const - (1/(σ^2)) * 0.5*sum r^2
     noise_std = 1.e6
-    return -(0.5 / (noise_std**2)) * loss(theta)
+    #return -(0.5 / (noise_std**2)) * loss(theta)
+    return 0.
+    
 
 run_mala = make_mala_unit_gaussian_prior(loglik)
 
@@ -358,7 +360,10 @@ print("param_summ",param_summ['b'])
 print("param_summ",param_summ['Q'])
 
 # Predictive band for σ11(t)
-sigma_mean, sigma_p05, sigma_p95, sigma_samples = posterior_predictive(samples,space,forward_sigma11)
+#sigma_mean, sigma_p05, sigma_p95, sigma_samples = posterior_predictive(samples,space,forward_sigma11)
+idx = np.random.choice(len(samples), size=min(len(samples), 100), replace=False)
+subset = samples[idx]
+sigma_mean, sigma_p05, sigma_p95, sigma_samples = posterior_predictive(subset,space,forward_sigma11) # slow, to be checked
 
 # Example: if you want the posterior mean physical-parameter dict:
 # mean_params = jax.tree_map(lambda trio: trio[0], param_summ)

@@ -103,6 +103,53 @@ def make_mala(logpi):
 
     return mala_step, run_chain
 
+def make_mala_fast(logpi):
+    vgrad_logpi = jax.value_and_grad(logpi)
+
+    @jax.jit
+    def mala_step_cached(key, theta, logpi_theta, grad_theta, eps):
+        k1, k2 = random.split(key)
+
+        mean = theta + 0.5 * (eps**2) * grad_theta
+        prop = mean + eps * random.normal(k1, shape=theta.shape)
+
+        logpi_prop, grad_prop = vgrad_logpi(prop)
+
+        log_alpha = (logpi_prop - logpi_theta
+                     + _log_q(theta, prop, grad_prop, eps)
+                     - _log_q(prop, theta, grad_theta, eps))
+
+        accept = jnp.log(random.uniform(k2)) < log_alpha
+        theta_new = jnp.where(accept, prop, theta)
+        logpi_new = jnp.where(accept, logpi_prop, logpi_theta)
+        grad_new  = jnp.where(accept, grad_prop, grad_theta)
+
+        return theta_new, logpi_new, grad_new, accept
+
+    @partial(jax.jit, static_argnames=("n_steps", "burn", "thin"))
+    def run_chain(key, theta_init, eps=1e-2, n_steps=1000, burn=100, thin=1):
+        logpi0, grad0 = vgrad_logpi(theta_init)
+
+        def body(carry, _):
+            key, theta, lp, g, acc = carry
+            key, k = random.split(key)
+            theta, lp, g, a = mala_step_cached(k, theta, lp, g, eps)
+            return (key, theta, lp, g, acc + a.astype(jnp.int32)), (theta, a)
+
+        init = (key, theta_init, logpi0, grad0, jnp.array(0, jnp.int32))
+        (keyT, thetaT, lpT, gT, acc_count), (thetas, accepts) = lax.scan(
+            body, init, xs=None, length=n_steps
+        )
+
+        thetas_kept  = thetas[burn::thin]
+        accepts_kept = accepts[burn::thin]
+        acc_rate     = jnp.mean(accepts_kept)
+
+        return thetas_kept, acc_rate
+
+    return mala_step_cached, run_chain
+
+
 def make_mala_unit_gaussian_prior(loglik):
 
     def logprior(theta):
@@ -112,6 +159,7 @@ def make_mala_unit_gaussian_prior(loglik):
     def logpost(theta):
         return loglik(theta) + logprior(theta)
 
-    _ , run_mala = make_mala(logpost)
+    _ , run_mala = make_mala_fast(logpost)
+    #_ , run_mala = make_mala(logpost)
 
     return run_mala
