@@ -32,8 +32,8 @@ def posterior_param_summary(thetas, space):
 
 def posterior_predictive(thetas,space,pred_func):
     """
-    Generate predictive mean and 5/95 bands for σ11(t) using forward_sigma11.
-    Assumes forward_sigma11(params) -> [T], same T for all samples.
+    Generate predictive mean and 5/95 bands for σ11(t) using forward method
+    Assumes pred_func(params) -> [T], same T for all samples.
     """
     # Build params for each sample (using projection internally)
     params_list = map_to_params(space, thetas)
