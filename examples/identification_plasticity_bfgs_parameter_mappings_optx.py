@@ -17,6 +17,53 @@ from optimization.parameter_mappings import build_param_space, make_loss, to_par
 
 from functools import partial
 
+import optimistix as optx  
+
+
+import jax
+print(jax.devices())
+
+def newton_optx(
+    residual_fn,
+    x0_tree,
+    diff_args,       # pytree: receives gradients
+    nondiff_args,    # pytree: NO gradients (stop_gradient applied)
+    tol=1e-8,
+    abs_tol=1e-12,
+    max_iter=50,
+):
+    """
+    Newton using Optimistix with two sets of arguments:
+      - diff_args: differentiable (for BFGS/grad)
+      - nondiff_args: not differentiable (strain history, old state, etc.)
+    """
+
+    # Freeze nondiff arguments so JAX never differentiates them
+    nondiff_args_static = jax.tree.map(lax.stop_gradient, nondiff_args)
+
+    # Pack into a single tuple for Optimistix
+    all_args = (diff_args, nondiff_args_static)
+
+    # Wrapper to unpack args correctly
+    def fn(x, args):
+        diff_args_, nondiff_args_ = args
+        return residual_fn(x, diff_args_, nondiff_args_)
+
+    solver = optx.Newton(rtol=tol, atol=abs_tol)
+
+    sol = optx.root_find(
+        fn,
+        solver,
+        x0_tree,
+        args=all_args,
+        max_steps=max_iter,
+        throw=False
+    )
+
+    x_fin = sol.value
+    iters = jnp.asarray(sol.stats["num_steps"], jnp.int32)
+    return x_fin, iters
+
 
 def C_iso_voigt(E, nu):
     mu  = E / (2.0 * (1.0 + nu))
@@ -45,7 +92,9 @@ def f_func(sigma, p, params):
 def Fischer_Burmeister(a,b):
     return jnp.sqrt(a**2+b**2)-a-b # ϕ(a,b)=0 ⟺ a≥0,b≥0,ab=0
 
-def residuals(x, epsilon, state_old, params, sigma_idx):
+def residuals(x, diff_args, nondiff_args):
+    params = diff_args
+    epsilon, state_old, sigma_idx = nondiff_args
 
     C = C_iso_voigt(params["E"], params["nu"])
     sigma, eps_p, p, gamma = x["sigma"], x["eps_p"], x["p"], x["gamma"]
@@ -108,10 +157,21 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
         "gamma":    jnp.asarray(0.0, dtype=dtype),
         "eps_cstr": jnp.asarray(z, dtype=dtype),  # good initial guess
     }
-    x_sol, iters = newton_implicit_unravel(
-        residuals, x0, (epsilon, state_old, params, sigma_idx),
-        tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
-    )
+    if 0: # own solver
+        x_sol, iters = newton_implicit_unravel(
+            residuals, x0, (epsilon, state_old, params, sigma_idx),
+            tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
+        )
+    else: # optimix
+        nondiff_args = (epsilon, state_old, sigma_idx)
+        diff_args = params
+        x_sol, iters = newton_optx(
+            residuals,  # the new residual with split args
+            x0,diff_args,nondiff_args,
+            tol=alg["tol"],
+            abs_tol=alg["abs_tol"],
+            max_iter=alg["max_it"],
+        )
     new_state = {"epsilon_p": x_sol["eps_p"], "p": x_sol["p"], "X": x_sol["X"]}
     fields    = {"sigma": x_sol["sigma"]}
     logs      = {"conv": jnp.asarray(iters),
@@ -140,6 +200,7 @@ ts = jnp.linspace(0., 1., n_ts)
 eps_xx = 4.0 * jnp.sin( ts * 30.0)
 epsilon_ts = (jnp.zeros((len(ts), 6))
               .at[:, 0].set(eps_xx))
+
 
 sigma_cstr_idx = jnp.asarray([1, 2, 3, 4, 5])
 

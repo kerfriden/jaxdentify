@@ -44,6 +44,9 @@ def f_func(sigma, p, params):
     return vm(sigma) - (params["sigma_y"] + R_iso(p, params))
 
 # ----------------- constitutive residuals (dict in/out) -----------------
+def Fischer_Burmeister(a,b):
+    return jnp.sqrt(a**2+b**2)-a-b # ϕ(a,b)=0 ⟺ a≥0,b≥0,ab=0
+
 def residuals(x, epsilon, state_old, params, sigma_idx):
 
     C = C_iso_voigt(params["E"], params["nu"])
@@ -53,24 +56,18 @@ def residuals(x, epsilon, state_old, params, sigma_idx):
     X = x["X"]
     X_old = state_old["X"]
 
-    # Contraintes : on remplace ε[eps_idx] par les inconnues eps_cstr
     epsilon_eff = epsilon.at[sigma_idx].set(x["eps_cstr"])
 
-    # 1) relation élastique
     res_sigma = sigma - C @ (epsilon_eff - eps_p)
 
-    # 2) direction de flux (autodiff) — plus de branchement ici
     df_dsigma = jax.grad(lambda s: f_func(s-X, p, params))(sigma)
 
-    # 3) écoulement associé + cumul de plasticité
     res_epsp = (eps_p - eps_p_old) - gamma * df_dsigma
     res_p    = (p - p_old) - gamma
 
-    # 4) contraintes sur sigma (σ[idx] = 0)
     res_cstr = sigma[sigma_idx]
 
-    # 5) consistance plastique (Newton ne s'exécute que si on est en plastique)
-    res_gamma = f_func(sigma-X, p, params)
+    res_gamma = Fischer_Burmeister( -f_func(sigma-X, p, params) , p-p_old )
 
     res_X = (X - X_old) - ( 2./3. * params['C_kin'] * (eps_p-eps_p_old) - params['D_kin'] * X * (p-p_old) )
 
@@ -95,53 +92,33 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     # ---------- 1) Constrained elastic trial (γ=0, εp=εp_old) ----------
     # Solve for z = eps_cstr_trial so that (C @ (epsilon_eff - eps_p_old))[sigma_idx] = 0
     # A @ (z - epsilon[eps_idx]) = - r
-    A = C[sigma_idx][:, sigma_idx]                                                   # (k,k)
+    A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
     r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
     dz = la_solve(A, r, assume_a='gen')                                            # (k,)
-    z  = epsilon[sigma_idx] - dz                                                     # eps_cstr_trial
+    z  = epsilon[sigma_idx] - dz                                                   # eps_cstr_trial
     epsilon_eff_trial = epsilon.at[sigma_idx].set(z)
     sigma_trial       = C @ (epsilon_eff_trial - eps_p_old)
 
     # yield function at trial
-    f_trial = f_func(sigma_trial-X_old, p_old, params)
+    #f_trial = f_func(sigma_trial-X_old, p_old, params)
 
-    it_dtype = jnp.int32  # keep cond branches identical
-
-    # ---------- 2) Elastic branch (skip Newton) ----------
-    def elastic_branch(_):
-        new_state = {"epsilon_p": eps_p_old, "p": p_old, "X": X_old}
-        fields    = {"sigma": sigma_trial}
-        logs      = {"conv": jnp.asarray(0, dtype=it_dtype),
-                     "eps_cstr": z}
-        return new_state, fields, logs
-
-    # ---------- 3) Plastic branch (run Newton), init with the constrained trial ----------
-    def plastic_branch(_):
-        x0 = {
-            "sigma":    sigma_trial,
-            "eps_p":    eps_p_old,
-            "p":        jnp.asarray(p_old, dtype=dtype),
-            "X":        jnp.asarray(X_old, dtype=dtype),
-            "gamma":    jnp.asarray(0.0, dtype=dtype),
-            "eps_cstr": jnp.asarray(z, dtype=dtype),  # good initial guess
-        }
-        x_sol, iters = newton_implicit_unravel(
-            residuals, x0, (epsilon, state_old, params, sigma_idx),
-            tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
-        )
-        new_state = {"epsilon_p": x_sol["eps_p"], "p": x_sol["p"], "X": x_sol["X"]}
-        fields    = {"sigma": x_sol["sigma"]}
-        logs      = {"conv": jnp.asarray(iters, dtype=it_dtype),
-                     "eps_cstr": x_sol["eps_cstr"]}
-        return new_state, fields, logs
-
-    # ---------- 4) Gate on f_trial ----------
-    new_state, fields, logs = lax.cond(
-        f_trial > 0.0,
-        plastic_branch,
-        elastic_branch,
-        operand=None
+    x0 = {
+        "sigma":    sigma_trial,
+        "eps_p":    eps_p_old,
+        "p":        jnp.asarray(p_old, dtype=dtype),
+        "X":        jnp.asarray(X_old, dtype=dtype),
+        "gamma":    jnp.asarray(0.0, dtype=dtype),
+        "eps_cstr": jnp.asarray(z, dtype=dtype),  # good initial guess
+    }
+    x_sol, iters = newton_implicit_unravel(
+        residuals, x0, (epsilon, state_old, params, sigma_idx),
+        tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
     )
+    new_state = {"epsilon_p": x_sol["eps_p"], "p": x_sol["p"], "X": x_sol["X"]}
+    fields    = {"sigma": x_sol["sigma"]}
+    logs      = {"conv": jnp.asarray(iters),
+                    "eps_cstr": x_sol["eps_cstr"]}
+    
     return new_state, fields, logs
 
 
@@ -260,9 +237,9 @@ key = random.PRNGKey(0)
 samples, acc_rate = run_mala(
     key,
     theta0,         # starting point, shape [d]
-    eps=0.5,
-    n_steps=1000,
-    burn=100,
+    eps=0.25,
+    n_steps=2000,
+    burn=500,
     thin=1,
 )
 

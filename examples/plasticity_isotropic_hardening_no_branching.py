@@ -11,6 +11,7 @@ from simulation.simulate import simulate_unpack
 from simulation.algebra import dev_voigt, norm_voigt
 from simulation.newton import newton_unravel
 
+from simulation.newton import newton_optx
 
 
 def C_iso_voigt(E, nu):
@@ -89,16 +90,16 @@ def unpack(x_sol,iters):
 # ----------------- constitutive update (pure function) -----------------
 def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "abs_tol":1e-12, "max_it":100}):
     x0 = initialize(step_load,state_old,params)
-    x_sol, iters = newton_unravel(
+    #x_sol, iters = newton_unravel(
+    #    residuals, x0, (step_load, state_old, params),
+    #    tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
+    #)
+    x_sol, iters = newton_optx(
         residuals, x0, (step_load, state_old, params),
         tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
     )
     new_state, fields, logs = unpack(x_sol, iters)
     return new_state, fields, logs
-
-
-
-
 
 # material params
 params = {
