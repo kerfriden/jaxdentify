@@ -15,7 +15,7 @@ from simulation.algebra import dev_voigt, norm_voigt
 from simulation.newton import newton_implicit_unravel
 from optimization.optimizers import bfgs
 
-
+from simulation.newton import newton_optx
 
 
 def C_iso_voigt(E, nu):

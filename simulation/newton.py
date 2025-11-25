@@ -154,3 +154,41 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
     x_fin_flat, iters = newton_implicit(res_flat, x0_flat, dyn_args, tol, abs_tol, max_iter)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
+
+
+
+
+
+import optimistix as optx
+
+def newton_optx(
+    residual_fn_pytree,
+    x0_tree,
+    dyn_args,
+    tol=1e-8,
+    abs_tol=1e-12,
+    max_iter=50,
+):
+    """
+    Optimistix-based root finder for a PyTree unknown.
+
+    residual_fn_pytree(x_tree, *dyn_args) -> pytree residual
+    x0_tree: initial guess (same pytree structure as unknown)
+    dyn_args: tuple of extra arguments for residual_fn_pytree
+    """
+
+    solver = optx.Newton(rtol=tol, atol=abs_tol)
+
+    sol = optx.root_find(
+        residual_fn_pytree,
+        solver,
+        x0_tree,
+        args=dyn_args,
+        max_steps=max_iter,
+        throw=False,  # don’t raise, report via sol.result
+    )
+
+    x_fin_tree = sol.value
+    iters = int(sol.stats["num_steps"])
+
+    return x_fin_tree, iters
