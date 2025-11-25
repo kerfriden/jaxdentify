@@ -159,7 +159,7 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
 
 
 
-import optimistix as optx
+
 
 def newton_optx(
     residual_fn_pytree,
@@ -169,6 +169,9 @@ def newton_optx(
     abs_tol=1e-12,
     max_iter=50,
 ):
+    
+    import optimistix as optx
+
     """
     Optimistix-based root finder for a PyTree unknown.
 
