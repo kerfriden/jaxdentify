@@ -188,3 +188,48 @@ def newton_optx( residual_fn_pytree,x0_tree,dyn_args,tol=1e-8,abs_tol=1e-12,max_
     iters = int(sol.stats["num_steps"])
 
     return x_fin_tree, iters
+
+
+
+def newton_optx(
+    residual_fn,
+    x0_tree,
+    diff_args,       # pytree: receives gradients
+    nondiff_args,    # pytree: NO gradients (stop_gradient applied)
+    tol=1e-8,
+    abs_tol=1e-12,
+    max_iter=50,
+):
+    """
+    Newton using Optimistix with two sets of arguments:
+      - diff_args: differentiable (for BFGS/grad)
+      - nondiff_args: not differentiable (strain history, old state, etc.)
+    """
+
+    import optimistix as optx  
+
+    # Freeze nondiff arguments so JAX never differentiates them
+    nondiff_args_static = jax.tree.map(lax.stop_gradient, nondiff_args)
+
+    # Pack into a single tuple for Optimistix
+    all_args = (diff_args, nondiff_args_static)
+
+    # Wrapper to unpack args correctly
+    def fn(x, args):
+        diff_args_, nondiff_args_ = args
+        return residual_fn(x, diff_args_, nondiff_args_)
+
+    solver = optx.Newton(rtol=tol, atol=abs_tol)
+
+    sol = optx.root_find(
+        fn,
+        solver,
+        x0_tree,
+        args=all_args,
+        max_steps=max_iter,
+        throw=False
+    )
+
+    x_fin = sol.value
+    iters = jnp.asarray(sol.stats["num_steps"], jnp.int32)
+    return x_fin, iters
