@@ -124,7 +124,7 @@ def _newton_bwd(residual_fn, tol, abs_tol, max_iter, aux, ct):
     Jx  = jax.jacfwd(F_x)(x_star)            # (n,n)
     lam = jnp.linalg.solve(Jx.T, ct_x)   # Jx^T λ = \bar{x}
 
-    _, vjp_theta = jax.vjp(F_theta, *dyn_args)
+    _, vjp_theta = jax.vjp(F_theta, *dyn_args) # Compute a (reverse-mode) vector-Jacobian product of F(theta).
     grads_theta  = vjp_theta(-lam)       # -(∂F/∂theta)^T λ
 
     grad_x0 = jnp.zeros_like(x_star)     # no grad wrt initial guess (implicit)
@@ -142,7 +142,7 @@ from jax import tree_util as jtu
 def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
                             tol=1e-6, abs_tol=1e-8, max_iter=100):
     # Create the ravel/unravel utilities from a *non-differentiable* template
-    x0_template = jtu.tree_map(lax.stop_gradient, x0_tree)  # <-- replace jax.tree_map
+    x0_template = jtu.tree_map(lax.stop_gradient, x0_tree) 
     x0_flat, unravel_x = ravel_pytree(x0_template)
 
     def res_flat(x_flat, *dyn):
@@ -161,14 +161,7 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
 
 
 
-def newton_optx(
-    residual_fn_pytree,
-    x0_tree,
-    dyn_args,
-    tol=1e-8,
-    abs_tol=1e-12,
-    max_iter=50,
-):
+def newton_optx( residual_fn_pytree,x0_tree,dyn_args,tol=1e-8,abs_tol=1e-12,max_iter=50):
     
     import optimistix as optx
 
