@@ -89,7 +89,7 @@ def make_newton(state_old, step_load, params):
         res_epsp  = (eps_p - eps_p_old) - (p - p_old) * df_dsigma
 
         #res_p = f_func(sigma, p, sigma_y, Q, b) * H + (1.0 - H) * (p - p_old)
-        x = jax.nn.softplus(f_func(sigma, p, sigma_y, Q, b) / K_visco)
+        x = jax.nn.relu(f_func(sigma, p, sigma_y, Q, b) / K_visco)
         x = jnp.clip(x, 1e-12, None)   # <---- otherwise gradients NAN, To be investigated
         res_p = ((p - p_old)/dt - x**n_visco) #* H + (1.0 - H)*(p - p_old)
 
@@ -98,6 +98,64 @@ def make_newton(state_old, step_load, params):
         res = {"res_sigma": res_sigma, "res_epsp": res_epsp, "res_p": res_p, "res_cstr": res_cstr}
 
         return res
+
+    def residuals_safe(x):
+        # unpack unknowns
+        sigma = x["sigma"]
+        eps_p = x["eps_p"]
+        p     = x["p"]
+        eps_cstr = x["eps_cstr"]
+
+        # effective total strain with constraint dof
+        epsilon_eff = epsilon.at[sigma_idx].set(eps_cstr)
+
+        # elastic residual (Hooke in Voigt notation)
+        res_sigma = sigma - Hooke_law_voigt(epsilon_eff - eps_p, E, nu)
+
+        # plastic flow direction df/dsigma
+        def f_sigma(s):
+            return f_func(s, p, sigma_y, Q, b)
+
+        df_dsigma = jax.grad(f_sigma)(sigma)
+
+        # plastic strain residual
+        res_epsp = (eps_p - eps_p_old) - (p - p_old) * df_dsigma
+
+        # viscoplastic residual with ReLU and double-where style safety
+        phi = f_func(sigma, p, sigma_y, Q, b)    # overstress-like yield function value
+
+        # Perzyna-type positive-part: <phi/K_visco>_+ using ReLU
+        y = phi / K_visco
+        overstress = jax.nn.relu(y)              # >= 0
+
+        # condition: only phi > 0 contributes viscoplastic flow
+        cond = phi > 0.0
+
+        # ---- double-where / safe-input trick ----
+        # For entries where cond == False, we replace overstress by a
+        # *safe* positive value (e.g. 1.0) so that the derivative of
+        # overstress**n_visco is finite there. The output is then
+        # masked back to 0 in the final where.
+        overstress_safe = jnp.where(cond, overstress, 1.0)
+
+        # inner where: dangerous power only sees safe inputs
+        g = jnp.where(cond, overstress_safe**n_visco, 0.0)
+
+        # outer where: final masking (often redundant but matches "double where" pattern)
+        #g = jnp.where(cond, g, 0.0)
+        # -----------------------------------------
+
+        res_p = (p - p_old) / dt - g
+
+        # constraint residual on selected stress component
+        res_cstr = sigma[sigma_idx]
+
+        return {
+            "res_sigma": res_sigma,
+            "res_epsp":  res_epsp,
+            "res_p":     res_p,
+            "res_cstr":  res_cstr,
+        }
 
     def initialize():
 
@@ -110,7 +168,8 @@ def make_newton(state_old, step_load, params):
 
         return state, fields
     
-    return residuals, initialize, unpack
+    return residuals_safe, initialize, unpack
+
 
 def initialize_state():
     return {"epsilon_p": jnp.zeros(6,), "p": jnp.array(0.0)}
