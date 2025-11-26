@@ -13,61 +13,14 @@ import matplotlib.pyplot as plt
 from simulation.simulate import simulate_unpack
 from simulation.algebra import dev_voigt, norm_voigt
 from simulation.newton import newton_implicit_unravel
+from simulation.newton import newton_optx
 
 from optimization.optimizers import bfgs
 from optimization.parameter_mappings import build_param_space, make_loss, to_params
 
 from functools import partial
 
-
-
-
-import jax
-print(jax.devices())
-
-def newton_optx(
-    residual_fn,
-    x0_tree,
-    diff_args,       # pytree: receives gradients
-    nondiff_args,    # pytree: NO gradients (stop_gradient applied)
-    tol=1e-8,
-    abs_tol=1e-12,
-    max_iter=50,
-):
-    """
-    Newton using Optimistix with two sets of arguments:
-      - diff_args: differentiable (for BFGS/grad)
-      - nondiff_args: not differentiable (strain history, old state, etc.)
-    """
-
-    import optimistix as optx  
-
-    # Freeze nondiff arguments so JAX never differentiates them
-    nondiff_args_static = jax.tree.map(lax.stop_gradient, nondiff_args)
-
-    # Pack into a single tuple for Optimistix
-    all_args = (diff_args, nondiff_args_static)
-
-    # Wrapper to unpack args correctly
-    def fn(x, args):
-        diff_args_, nondiff_args_ = args
-        return residual_fn(x, diff_args_, nondiff_args_)
-
-    solver = optx.Newton(rtol=tol, atol=abs_tol)
-
-    sol = optx.root_find(
-        fn,
-        solver,
-        x0_tree,
-        args=all_args,
-        max_steps=max_iter,
-        throw=False
-    )
-
-    x_fin = sol.value
-    iters = jnp.asarray(sol.stats["num_steps"], jnp.int32)
-    return x_fin, iters
-
+print("jax.devices()",jax.devices())
 
 def C_iso_voigt(E, nu):
     mu  = E / (2.0 * (1.0 + nu))
@@ -148,21 +101,8 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     epsilon   = step_load["epsilon"]
     sigma_idx = step_load.get("sigma_cstr_idx")
 
-    # ---------- 1) Constrained elastic trial (γ=0, εp=εp_old) ----------
-    # Solve for z = eps_cstr_trial so that (C @ (epsilon_eff - eps_p_old))[sigma_idx] = 0
-    # A @ (z - epsilon[eps_idx]) = - r
-    #A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
-    #r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
-    #dz = la_solve(A, r, assume_a='gen')                                            # (k,)
-    #z  = epsilon[sigma_idx] - dz                                                   # eps_cstr_trial
-    #epsilon_eff_trial = epsilon.at[sigma_idx].set(z)
-    #sigma_trial       = C @ (epsilon_eff_trial - eps_p_old)
-
     epsilon_eff_trial , eps_cstr_trial = solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params)
     sigma_trial       = C @ (epsilon_eff_trial - eps_p_old)
-
-    # yield function at trial
-    #f_trial = f_func(sigma_trial-X_old, p_old, params)
 
     x0 = {
         "sigma":    sigma_trial,
