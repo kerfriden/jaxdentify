@@ -17,7 +17,7 @@ from optimization.parameter_mappings import build_param_space, make_loss, to_par
 
 from functools import partial
 
-import optimistix as optx  
+
 
 
 import jax
@@ -37,6 +37,8 @@ def newton_optx(
       - diff_args: differentiable (for BFGS/grad)
       - nondiff_args: not differentiable (strain history, old state, etc.)
     """
+
+    import optimistix as optx  
 
     # Freeze nondiff arguments so JAX never differentiates them
     nondiff_args_static = jax.tree.map(lax.stop_gradient, nondiff_args)
@@ -127,6 +129,14 @@ def residuals(x, diff_args, nondiff_args):
         "res_cstr":   res_cstr,
     }
 
+def solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params):
+    C = C_iso_voigt(params["E"], params["nu"])
+    A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
+    r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
+    dz = la_solve(A, r, assume_a='gen')                                            # (k,)
+    eps_cstr_trial = epsilon[sigma_idx] - dz                                               
+    return epsilon.at[sigma_idx].set(eps_cstr_trial) , eps_cstr_trial
+
 def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "abs_tol":1e-12, "max_it":100}):
 
     C = C_iso_voigt(params["E"], params["nu"])
@@ -139,11 +149,14 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     # ---------- 1) Constrained elastic trial (γ=0, εp=εp_old) ----------
     # Solve for z = eps_cstr_trial so that (C @ (epsilon_eff - eps_p_old))[sigma_idx] = 0
     # A @ (z - epsilon[eps_idx]) = - r
-    A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
-    r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
-    dz = la_solve(A, r, assume_a='gen')                                            # (k,)
-    z  = epsilon[sigma_idx] - dz                                                   # eps_cstr_trial
-    epsilon_eff_trial = epsilon.at[sigma_idx].set(z)
+    #A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
+    #r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
+    #dz = la_solve(A, r, assume_a='gen')                                            # (k,)
+    #z  = epsilon[sigma_idx] - dz                                                   # eps_cstr_trial
+    #epsilon_eff_trial = epsilon.at[sigma_idx].set(z)
+    #sigma_trial       = C @ (epsilon_eff_trial - eps_p_old)
+
+    epsilon_eff_trial , eps_cstr_trial = solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params)
     sigma_trial       = C @ (epsilon_eff_trial - eps_p_old)
 
     # yield function at trial
@@ -155,7 +168,7 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
         "p":        jnp.asarray(p_old, dtype=dtype),
         "X":        jnp.asarray(X_old, dtype=dtype),
         "gamma":    jnp.asarray(0.0, dtype=dtype),
-        "eps_cstr": jnp.asarray(z, dtype=dtype),  # good initial guess
+        "eps_cstr": jnp.asarray(eps_cstr_trial, dtype=dtype),  # good initial guess
     }
     if 0: # own solver
         x_sol, iters = newton_implicit_unravel(
