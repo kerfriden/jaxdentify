@@ -2,16 +2,18 @@ import jax
 import jax.numpy as jnp
 #from jax import value_and_grad, jit, lax, tree, jacfwd
 from jax import lax, jit
-from jax import config
-config.update("jax_enable_x64", True)
 from jax.scipy.linalg import solve as la_solve
+
+jax.config.update("jax_platform_name", "cpu")   # force CPU
+jax.config.update("jax_enable_x64", True)
 
 import time
 import matplotlib.pyplot as plt
 
-from simulation.simulate import simulate
+from simulation.simulate import simulate_unpack
 from simulation.algebra import dev_voigt, norm_voigt
 from simulation.newton import newton_implicit_unravel
+
 from optimization.optimizers import bfgs
 from optimization.parameter_mappings import build_param_space, make_loss, to_params
 
@@ -223,111 +225,135 @@ load_ts = {
 }
 
 state0 = {"epsilon_p": jnp.zeros(6,), "p": jnp.array(0.0),"X": jnp.zeros(6,)}
-state_T, saved = simulate(constitutive_update_fn,state0, load_ts, params)
+state_T, fields_ts, state_ts, logs_ts = simulate_unpack(constitutive_update_fn,state0, load_ts, params)
+
+print("iteration count (first 100)",logs_ts["conv"][:100])
 
 eps11 = jnp.array(load_ts["epsilon"][:,0])
-plt.plot(eps11,saved["fields"]["sigma"][:,0])
+plt.plot(eps11,fields_ts["sigma"][:,0])
 plt.grid()
-plt.xlabel(r"$F_{11}$")
+plt.xlabel(r"$\epsilon_{11}$")
 plt.ylabel(r"$\sigma_{11}$")
 plt.show()
 
-print(saved["logs"]["conv"])
-
-# save reference solution for inverse problem
-true_params = params.copy()
-sigma_xx_obs = saved["fields"]["sigma"][:, 0]
 
 
-print("-----------------------------------------------")
-print("active/frozen parameter ranges and distribution")
-print("-----------------------------------------------")
 
 
-# --- declare frozen + active (bounds + scale). Omit values in init_params to use interval midpoints ---
-init_params = {
-    "E": 1.0, "nu": 0.3, "sigma_y": 1.0,  # frozen values supplied
-    # "Q": (omitted -> defaults to geom. mean of bounds)
-    # "b": (omitted -> defaults to geom. mean of bounds)
-    "C_kin": 0.25, "D_kin": 1.0,          # frozen for this example
+
+
+def plot_batch(load_ts, fields_ts_batch):
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Extract sigma batch
+    sigma_batch = np.array(fields_ts_batch["sigma"])      # (B, n_ts, 6)
+    B, n_ts, _ = sigma_batch.shape
+
+    # Extract epsilon
+    eps = np.array(load_ts["epsilon"])
+
+    # If epsilon is batched: (B, n_ts, 6)
+    if eps.ndim == 3:
+        eps11_batch = eps[:, :, 0]                        # (B, n_ts)
+    # If epsilon is single-path: (n_ts, 6)
+    else:
+        eps11 = eps[:, 0]                                 # (n_ts,)
+        eps11_batch = np.broadcast_to(eps11, (B, n_ts))   # make B copies
+
+    plt.figure()
+    for i in range(B):
+        plt.plot(eps11_batch[i], sigma_batch[i, :, 0])    # σ11 vs ε11 for batch i
+
+    plt.grid(True)
+    plt.xlabel(r"$\varepsilon_{11}$")
+    plt.ylabel(r"$\sigma_{11}$")
+    plt.show()
+    
+
+print("---------------------------------------------")
+print("batched simulation case 1: several parameters")
+print("---------------------------------------------")
+
+
+# 1) Wrap simulate into a single-sample function
+def run_one(params, load_ts, state0):
+    # simulate(update_fn, state0, load_ts, params)
+    state_T, fields_ts, state_ts, logs_ts = simulate_unpack(constitutive_update_fn,state0, load_ts, params)
+    return state_T, fields_ts, state_ts, logs_ts
+
+# 2) Vectorize over the first axis of params
+batched_run = jax.vmap(run_one, in_axes=(0,  None,   None))  # params batched, load_ts & state0 shared
+
+# 3) Build batched params (pytree of arrays with leading batch dim)
+# Example: 3 different sigma_y values, everything else same
+params_batch = {
+    "sigma_y": jnp.array([0.8, 1.0, 1.2]),
+    "Q":       jnp.array([1.0, 1.0, 1.0]),
+    "b":       jnp.array([0.1, 0.1, 0.1]),
+    "C_kin":   jnp.array([0.25, 0.25, 0.25]),
+    "D_kin":   jnp.array([1.0,  1.0,  1.0]),
+    "E":       jnp.array([1.0,  1.0,  1.0]),
+    "nu":      jnp.array([0.3,  0.3,  0.3]),
 }
 
-active_specs = {
-    "E": False, "nu": False, "sigma_y": False, "C_kin": False, "D_kin": False,
-    "Q": {"lower": 1.e-3, "upper": 1.e+2, "scale": "log", "mask": None},
-    "b": {"lower": 1.e-3, "upper": 1.e+0, "scale": "log", "mask": None},
+# 4) Call the batched simulation
+state0 = {"epsilon_p": jnp.zeros(6,), "p": jnp.array(0.0), "X": jnp.zeros(6,)}
+
+state_T_batch, fields_ts_batch, state_ts_batch, logs_ts_batch = batched_run(params_batch, load_ts, state0)
+
+plot_batch(load_ts,fields_ts_batch)
+
+print("----------------------------------------------")
+print("batched simulation case 2: several init states")
+print("----------------------------------------------")
+
+batched_run = jax.vmap(
+    run_one,
+    in_axes=(None, 0, 0)   # params shared, load_ts batched, state0 batched
+)
+
+B = 4          # batch size
+n_ts = ts.shape[0]
+
+# One frequency per batch element (shape (B,))
+freqs = jnp.array([20.0, 25, 30.0, 40.0])  # example
+amps= jnp.array([4., 2., 5., 3.])  # example
+
+# Build batched eps_xx: shape (B, n_ts)
+# ts[None, :]      -> (1, n_ts)
+# freqs[:, None]   -> (B, 1)
+eps_xx_batch = amps[:, None] * jnp.sin(ts[None, :] * freqs[:, None])  # (B, n_ts)
+
+# Now build epsilon_ts_batch: (B, n_ts, 6), put eps_xx_batch into the 11 component
+epsilon_ts_batch = jnp.zeros((B, n_ts, 6))
+epsilon_ts_batch = epsilon_ts_batch.at[:, :, 0].set(eps_xx_batch)
+
+sigma_cstr_idx = jnp.asarray([1, 2, 3, 4, 5])
+k = sigma_cstr_idx.size
+sigma_cstr_idx_ts = jnp.broadcast_to(sigma_cstr_idx, (n_ts, k))      # (n_ts, k)
+sigma_cstr_idx_batch = jnp.broadcast_to(sigma_cstr_idx_ts, (B, n_ts, k))
+
+load_ts_batch = {
+    "epsilon":        epsilon_ts_batch,      # (B, n_ts, 6)
+    "sigma_cstr_idx": sigma_cstr_idx_batch,  # (B, n_ts, k)
 }
 
-space, theta0 = build_param_space(init_params, active_specs)
+state0_batch = {
+    "epsilon_p": jnp.zeros((B, 6)),
+    "p":         jnp.zeros((B,)),
+    "X":         jnp.zeros((B, 6)),
+}
+params = {
+    "sigma_y": 1.0,
+    "Q": 1.0,
+    "b": jnp.array(0.1),
+    "C_kin": 0.25,
+    "D_kin": 1.0,
+    "E": 1.0,
+    "nu": 0.3,
+}
 
+state_T_batch, fields_ts_batch, state_ts_batch, logs_ts_batch = batched_run(params, load_ts_batch, state0_batch)
 
-print("-----------------")
-print("user-defined loss")
-print("-----------------")
-
-
-def forward_sigma11(params):
-    state0 = {"epsilon_p": jnp.zeros(6), "p": jnp.array(0.0), "X": jnp.zeros(6)}
-    _, saved = simulate(constitutive_update_fn, state0, load_ts, params)
-    return saved["fields"]["sigma"][:, 0]
-
-def simulate_and_loss(params):
-    pred = forward_sigma11(params)
-    r = pred - sigma_xx_obs
-    return 0.5 * jnp.mean(r * r)
-
-loss = make_loss(space,simulate_and_loss)
-
-
-
-print("-------------")
-print("run optimizer")
-print("-------------")
-
-init = to_params(space, theta0)
-print("Initial Q, b:", init["Q"], init["b"])
-
-# --- run BFGS (optionally seed with a few Adam steps you have) ---
-t0 = time.perf_counter()
-theta_opt, fval, info = bfgs(loss, theta0, rtol=1.e-3, n_display=1)
-t1 = time.perf_counter()
-print("time for optimizaton:", (t1 - t0), "s")
-print("final loss:", fval)
-print("info",info)
-
-# --- unpack physical identified parameters ---
-identified = to_params(space, theta_opt)
-print("Identified Q, b:", identified["Q"], identified["b"])
-# Optional: get fitted curve
-
-print("-----------")
-print("plot result")
-print("-----------")
-
-
-sigma_fit = forward_sigma11(identified)
-sigma_init = forward_sigma11(init)
-
-plt.plot(load_ts['epsilon'][:,0],sigma_fit,'blue',label=r'$\hat{\sigma}_{11}$ (fit)')
-plt.plot(load_ts['epsilon'][:,0],sigma_xx_obs,'black',label=r'$\hat{\sigma}_{11}$ (data)')
-plt.plot(load_ts['epsilon'][:,0],sigma_init,'green',label=r'$\hat{\sigma}_{11}$ (initial)')
-plt.legend(loc='best')
-plt.grid()
-plt.show()
-
-print("--------------")
-print("test CPU times")
-print("--------------")
-
-v_ = loss(theta0).block_until_ready()
-_ = jax.grad(loss)(theta0).block_until_ready()  # warm both paths
-
-t0 = time.perf_counter()
-f = loss(theta0).block_until_ready()
-t1 = time.perf_counter()
-print("one forward loss eval:", (t1 - t0) * 1e3, "ms")
-
-t0 = time.perf_counter()
-g = jax.grad(loss)(theta0).block_until_ready()
-t1 = time.perf_counter()
-print("one grad eval:", (t1 - t0) * 1e3, "ms")
+plot_batch(load_ts_batch,fields_ts_batch)

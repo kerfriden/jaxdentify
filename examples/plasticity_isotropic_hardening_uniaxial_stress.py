@@ -72,6 +72,16 @@ def residuals(x, epsilon, state_old, params, sigma_idx):
         "res_cstr":   res_cstr,
     }
 
+# Solve for z = eps_cstr_trial so that (C @ (epsilon_eff - eps_p_old))[sigma_idx] = 0
+# epsilon_eff[sigma_idx] = eps_cstr_trial
+def solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params):
+    C = C_iso_voigt(params["E"], params["nu"])
+    A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
+    r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
+    dz = la_solve(A, r, assume_a='gen')                                            # (k,)
+    eps_cstr_trial = epsilon[sigma_idx] - dz                                               
+    return epsilon.at[sigma_idx].set(eps_cstr_trial) , eps_cstr_trial
+
 # ----------------- constitutive update (pure function) -----------------
 def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "abs_tol":1e-12, "max_it":100}):
 
@@ -85,11 +95,13 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     # ---------- 1) Constrained elastic trial (γ=0, εp=εp_old) ----------
     # Solve for z = eps_cstr_trial so that (C @ (epsilon_eff - eps_p_old))[sigma_idx] = 0
     # A @ (z - epsilon[eps_idx]) = - r
-    A = C[sigma_idx][:, sigma_idx]
-    r = (C @ (epsilon - eps_p_old))[sigma_idx]
-    dz = la_solve(A, r, assume_a='gen')
-    z  = epsilon[sigma_idx] - dz
-    epsilon_eff_trial = epsilon.at[sigma_idx].set(z)
+    #A = C[sigma_idx][:, sigma_idx]
+    #r = (C @ (epsilon - eps_p_old))[sigma_idx]
+    #dz = la_solve(A, r, assume_a='gen')
+    #z  = epsilon[sigma_idx] - dz
+    #epsilon_eff_trial = epsilon.at[sigma_idx].set(z)
+
+    epsilon_eff_trial , eps_cstr_trial = solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params)
     sigma_trial = C @ (epsilon_eff_trial - eps_p_old)
 
     # yield function at trial
@@ -101,7 +113,7 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
     def elastic_branch(_):
         new_state = {"epsilon_p": eps_p_old, "p": p_old}
         fields    = {"sigma": sigma_trial,
-                     "eps_cstr": z}
+                     "eps_cstr": eps_cstr_trial}
         logs      = {"conv": jnp.asarray(0, dtype=it_dtype)}
         return new_state, fields, logs
 
@@ -112,7 +124,7 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
             "eps_p":    eps_p_old,
             "p":        jnp.asarray(p_old, dtype=dtype),
             "gamma":    jnp.asarray(0.0, dtype=dtype),
-            "eps_cstr": jnp.asarray(z, dtype=dtype),  # good initial guess
+            "eps_cstr": jnp.asarray(eps_cstr_trial, dtype=dtype),  # good initial guess
         }
         x_sol, iters = newton_unravel(
             residuals, x0, (epsilon, state_old, params, sigma_idx),

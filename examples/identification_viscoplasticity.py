@@ -1,8 +1,9 @@
 import jax
 import jax.numpy as jnp
 #from jax import value_and_grad, jit, lax, tree, jacfwd
-from jax import config
-config.update("jax_enable_x64", True)
+from jax.scipy.linalg import solve as la_solve
+
+jax.config.update("jax_enable_x64", True)
 
 import time
 import matplotlib.pyplot as plt
@@ -14,6 +15,20 @@ from simulation.algebra import dev_voigt, norm_voigt, voigt_to_tensor, tensor_to
 
 from optimization.optimizers import bfgs
 from optimization.parameter_mappings import build_param_space, make_loss, to_params
+
+
+def C_iso_voigt(E, nu):
+    mu  = E / (2.0 * (1.0 + nu))
+    lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    lam2 = lam + 2.0 * mu
+    return jnp.array([
+        [lam2, lam,  lam,  0., 0., 0.],
+        [lam,  lam2, lam,  0., 0., 0.],
+        [lam,  lam,  lam2, 0., 0., 0.],
+        [0.,   0.,   0.,   mu, 0., 0.],
+        [0.,   0.,   0.,   0., mu, 0.],
+        [0.,   0.,   0.,   0., 0., mu],
+    ])
 
 def Hooke_law_voigt(eps_e, E, nu):
     lam = E*nu / ((1 + nu) * (1 - 2*nu))
@@ -36,6 +51,14 @@ def f_func(sigma, p, sigma_y, Q, b):
 def Fischer_Burmeister(a,b):
     return jnp.sqrt(a**2+b**2)-a-b # ϕ(a,b)=0 ⟺ a≥0,b≥0,ab=0
 
+def solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params):
+    C = C_iso_voigt(params["E"], params["nu"])
+    A = C[sigma_idx][:, sigma_idx]                                                 # (k,k)
+    r = (C @ (epsilon - eps_p_old))[sigma_idx]                                     # (k,)
+    dz = la_solve(A, r, assume_a='gen')                                            # (k,)
+    eps_cstr_trial = epsilon[sigma_idx] - dz                                               
+    return epsilon.at[sigma_idx].set(eps_cstr_trial) , eps_cstr_trial
+
 def make_newton(state_old, step_load, params):
 
     epsilon = step_load["epsilon"]
@@ -45,7 +68,11 @@ def make_newton(state_old, step_load, params):
     sigma_y, Q, b = params["sigma_y"], params["Q"], params["b"]
     eps_p_old, p_old = state_old["epsilon_p"], state_old["p"]
 
-    sigma_trial = Hooke_law_voigt(epsilon - eps_p_old, E, nu)
+    sigma_idx = step_load.get("sigma_cstr_idx")
+
+    epsilon_eff_trial , eps_cstr_trial = solve_eps_cstr(epsilon,eps_p_old,sigma_idx,params)
+
+    sigma_trial = Hooke_law_voigt(epsilon_eff_trial - eps_p_old, E, nu)
 
     dt = step_load["delta_t"]
 
@@ -53,23 +80,28 @@ def make_newton(state_old, step_load, params):
 
         sigma, eps_p, p = x["sigma"], x["eps_p"], x["p"]
 
-        res_sigma = sigma - Hooke_law_voigt(epsilon - eps_p, E, nu)
+        eps_cstr = x["eps_cstr"]
+        epsilon_eff = epsilon.at[sigma_idx].set(eps_cstr)
+
+        res_sigma = sigma - Hooke_law_voigt(epsilon_eff - eps_p, E, nu)
 
         df_dsigma = jax.grad(lambda s: f_func(s, p, sigma_y, Q, b))(sigma)
         res_epsp  = (eps_p - eps_p_old) - (p - p_old) * df_dsigma
 
         #res_p = f_func(sigma, p, sigma_y, Q, b) * H + (1.0 - H) * (p - p_old)
         x = jax.nn.softplus(f_func(sigma, p, sigma_y, Q, b) / K_visco)
-        x = jnp.clip(x, 1e-12, None)   # <---- otherwise gradients NAN
+        x = jnp.clip(x, 1e-12, None)   # <---- otherwise gradients NAN, To be investigated
         res_p = ((p - p_old)/dt - x**n_visco) #* H + (1.0 - H)*(p - p_old)
 
-        res = {"res_sigma": res_sigma, "res_epsp": res_epsp, "res_p": res_p}
+        res_cstr = sigma[sigma_idx]
+
+        res = {"res_sigma": res_sigma, "res_epsp": res_epsp, "res_p": res_p, "res_cstr": res_cstr}
 
         return res
 
     def initialize():
 
-        return { "sigma": sigma_trial, "eps_p": eps_p_old, "p": jnp.asarray(p_old) }
+        return { "sigma": sigma_trial, "eps_cstr": eps_cstr_trial, "eps_p": eps_p_old, "p": jnp.asarray(p_old) }
 
     def unpack(x): 
 
@@ -118,7 +150,10 @@ epsilon_ts = (jnp.zeros((n_ts, 6))
 
 dt0 = ts[1] - ts[0]
 delta_t = jnp.concatenate([jnp.array([dt0]), jnp.diff(ts)])
-load_ts = {"epsilon": epsilon_ts, "delta_t": delta_t}
+
+sigma_cstr_idx = jnp.asarray([1, 2, 3, 4, 5])
+
+load_ts = {"epsilon": epsilon_ts, "delta_t": delta_t, "sigma_cstr_idx": jnp.broadcast_to(sigma_cstr_idx, (len(ts), sigma_cstr_idx.shape[0])) }
 
 state0 = initialize_state()
 state_T, fields_ts, state_ts, logs_ts = make_simulate_unpack(

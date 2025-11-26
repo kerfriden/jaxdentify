@@ -2,8 +2,9 @@ import jax
 import jax.numpy as jnp
 #from jax import value_and_grad, jit, lax, tree, jacfwd
 from jax import lax
-from jax import config
-config.update("jax_enable_x64", True)
+
+jax.config.update("jax_enable_x64", True)
+
 from jax.scipy.linalg import solve as la_solve
 
 import time
