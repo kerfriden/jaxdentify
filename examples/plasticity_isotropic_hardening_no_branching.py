@@ -40,10 +40,12 @@ def f_func(sigma, p, sigma_y, Q, b):
 def residuals(x, step_load, state_old, params):
 
     epsilon   = step_load["epsilon"]
+
     E, nu  = params["E"], params["nu"]
     sigma_y, Q, b = params["sigma_y"], params["Q"], params["b"]
+
     eps_p_old, p_old = state_old["epsilon_p"], state_old["p"]
-    sigma, eps_p, p = x["sigma"], x["eps_p"], x["p"]
+
     sigma, eps_p, p = x["sigma"], x["eps_p"], x["p"]
 
     C = C_iso_voigt(E, nu)
@@ -58,9 +60,7 @@ def residuals(x, step_load, state_old, params):
 
     res_p = f_func(sigma, p, sigma_y, Q, b) * H + (1.0 - H) * (p - p_old)
 
-    res = {"res_sigma": res_sigma, "res_epsp": res_epsp, "res_p": res_p}
-
-    return res
+    return {"res_sigma": res_sigma, "res_epsp": res_epsp, "res_p": res_p}
 
 def initialize(step_load,state_old,params):
 
@@ -69,7 +69,7 @@ def initialize(step_load,state_old,params):
     sigma_y, Q, b = params["sigma_y"], params["Q"], params["b"]
     eps_p_old, p_old = state_old["epsilon_p"], state_old["p"]
 
-    C = C_iso_voigt(params["E"], params["nu"])
+    C = C_iso_voigt(E, nu)
 
     sigma_trial = C @ (epsilon - eps_p_old)
     f_trial     = f_func(sigma_trial, p_old, sigma_y, Q, b)
@@ -90,14 +90,14 @@ def unpack(x_sol,iters):
 # ----------------- constitutive update (pure function) -----------------
 def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "abs_tol":1e-12, "max_it":100}):
     x0 = initialize(step_load,state_old,params)
-    #x_sol, iters = newton_unravel(
-    #    residuals, x0, (step_load, state_old, params),
-    #    tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
-    #)
-    x_sol, iters = newton_optx(
+    x_sol, iters = newton_unravel(
         residuals, x0, (step_load, state_old, params),
         tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
     )
+    #x_sol, iters = newton_optx(
+    #    residuals, x0, (step_load, state_old, params),
+    #    tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
+    #)
     new_state, fields, logs = unpack(x_sol, iters)
     return new_state, fields, logs
 
