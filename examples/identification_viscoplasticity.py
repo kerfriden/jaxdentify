@@ -162,7 +162,7 @@ def make_newton(state_old, step_load, params):
         return { "sigma": sigma_trial, "eps_cstr": eps_cstr_trial, "eps_p": eps_p_old, "p": jnp.asarray(p_old) }
 
     def unpack(x): 
-
+ 
         state = {"epsilon_p": x["eps_p"], "p": x["p"]}
         fields    = {"sigma": x["sigma"]}
 
