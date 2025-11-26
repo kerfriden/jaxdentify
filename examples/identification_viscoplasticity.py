@@ -76,7 +76,7 @@ def make_newton(state_old, step_load, params):
 
     dt = step_load["delta_t"]
 
-    def residuals(x):
+    def residuals_clipping(x):
 
         sigma, eps_p, p = x["sigma"], x["eps_p"], x["p"]
 
@@ -99,7 +99,7 @@ def make_newton(state_old, step_load, params):
 
         return res
 
-    def residuals_safe(x):
+    def residuals_double_where(x):
         # unpack unknowns
         sigma = x["sigma"]
         eps_p = x["eps_p"]
@@ -168,7 +168,7 @@ def make_newton(state_old, step_load, params):
 
         return state, fields
     
-    return residuals_safe, initialize, unpack
+    return residuals_double_where, initialize, unpack
 
 
 def initialize_state():
