@@ -78,113 +78,82 @@ def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_it
     return x_fin, iters
 
 
-
-
-def newton(
-    residual_fn,
-    x0,
+def newton_fixed_scan(
+    residual_fn,          # residual_fn(x, *dyn_args) -> (m,) array
+    x0,                   # (n,) array
     dyn_args=(),
     tol=1e-8,
-    abs_tol=1e-10,
+    abs_tol=1e-12,
     max_iter=100,
-    method="while",          # "while" or "scan"
-    rtol_disable_at=1e-10,   # if ||R0|| < this -> ignore relative tolerance (use abs_tol only)
+    use_jacrev=True,      # to match your old design
 ):
     """
-    Solve residual_fn(x, *dyn_args) = 0 with Newton.
+    Fixed-iteration Newton (static loop) with OR stopping criterion:
+      ||R|| <= abs_tol  OR  ||R|| <= tol*||R0||
 
-    Convergence test:
-      if ||R0|| >= rtol_disable_at:
-          ||R|| < tol*||R0||  OR  ||R|| < abs_tol
-      else:
-          ||R|| < abs_tol     (relative tol deactivated)
-
-    method:
-      - "while": lax.while_loop with dynamic early exit
-      - "scan" : fixed-length lax.scan, but *no extra Newton step* once done
-                (the solve/Jacobian/residual computations are skipped after done=True)
-
-    Returns: (x_sol, iters)
-      iters = number of Newton steps actually executed, or -1 if not converged.
+    Guarantees:
+      - If converged at x0: 0 Newton steps are executed (no solve).
+      - After convergence is reached: no further Newton steps are executed (no solve).
+    Returns:
+      x_sol, iters_used   (iters_used = -1 if not converged in max_iter)
     """
-    max_it  = int(max_iter)  # must be a Python int for scan length
+    max_it  = int(max_iter)
     x_dtype = getattr(x0, "dtype", jnp.float64)
     tol     = jnp.asarray(tol, dtype=x_dtype)
     abs_tol = jnp.asarray(abs_tol, dtype=x_dtype)
-    rtol_disable_at = jnp.asarray(rtol_disable_at, dtype=x_dtype)
 
     def res(x):
         return residual_fn(x, *dyn_args)
 
-    Jfun = jax.jacfwd(res)
+    Jfun = jax.jacrev(res) if use_jacrev else jax.jacfwd(res)
 
     R0   = res(x0)
-    Rini = jnp.linalg.norm(R0)
-
-    use_rel = Rini >= rtol_disable_at
+    nR0  = jnp.linalg.norm(R0)
 
     def converged(nR):
-        return (nR < abs_tol) | (use_rel & (nR < tol * Rini))
+        return (nR <= abs_tol) | (nR <= tol * nR0)
 
-    nR0   = jnp.linalg.norm(R0)
     done0 = converged(nR0)
 
-    if method == "while":
-        # Carry done so we never do an extra iteration after convergence.
-        def cond(carry):
-            x, i, done = carry
-            return (i < max_it) & (~done)
+    def body(i, carry):
+        x, done, iters = carry
 
-        def body(carry):
-            x, i, _done = carry
-            R  = res(x)
-            J  = Jfun(x)
-            dx = la_solve(J, R, assume_a="gen")
-            x1 = x - dx
+        def keep(_):
+            # already converged -> do nothing, no solve
+            return (x, True, iters)
 
-            nR1   = jnp.linalg.norm(res(x1))
-            done1 = converged(nR1)
-            return (x1, i + 1, done1)
+        def step(_):
+            # check BEFORE doing a Newton step (prevents extra step)
+            r  = res(x)
+            nr = jnp.linalg.norm(r)
+            done_now = converged(nr)
 
-        x_fin, iters, done_fin = lax.while_loop(cond, body, (x0, jnp.int32(0), done0))
-        iters = jnp.where(done_fin, iters, jnp.int32(-1))
-        return x_fin, iters
+            def keep2(__):
+                return (x, True, iters)
 
-    elif method == "scan":
-        # Fixed number of slots, but after done=True we skip all heavy work (no solve, no jacobian).
-        def keep(carry):
-            return carry
+            def do2(__):
+                J  = Jfun(x)
+                dx = la_solve(J, -r, assume_a="gen")   # x + dx, consistent w/ your old code
+                x1 = x + dx
+                # update done after the step (so next iterations skip)
+                nr1 = jnp.linalg.norm(res(x1))
+                done1 = converged(nr1)
+                return (x1, done1, iters + jnp.int32(1))
 
-        def step(carry):
-            x, done, iters = carry
-            R  = res(x)
-            J  = Jfun(x)
-            dx = la_solve(J, R, assume_a="gen")
-            x1 = x - dx
+            return lax.cond(done_now, keep2, do2, operand=None)
 
-            nR1   = jnp.linalg.norm(res(x1))
-            done1 = converged(nR1)
-            return (x1, done1, iters + jnp.int32(1))
+        return lax.cond(done, keep, step, operand=None)
 
-        def one_iter(carry, _):
-            carry2 = lax.cond(carry[1], keep, step, carry)  # if done, do nothing
-            return carry2, None
+    x_fin, done_fin, iters = lax.fori_loop(
+        0, max_it, body, (x0, done0, jnp.int32(0))
+    )
+    iters = jnp.where(done_fin, iters, jnp.int32(-1))
+    return x_fin, iters
 
-        (x_fin, done_fin, iters), _ = lax.scan(
-            one_iter,
-            (x0, done0, jnp.int32(0)),
-            xs=None,
-            length=max_it,
-        )
-        iters = jnp.where(done_fin, iters, jnp.int32(-1))
-        return x_fin, iters
-
-    else:
-        raise ValueError(f"Unknown method={method!r}. Use 'while' or 'scan'.")
 
 # ----------------- dict/PyTree wrapper around array Newton -----------------
 def newton_unravel(residual_fn_pytree, x0_tree, dyn_args, 
-                   tol=1e-6, abs_tol=1e-8, max_iter=100, method="while", rtol_disable_at=1e-10):
+                   tol=1e-6, abs_tol=1e-8, max_iter=100):
     """
     residual_fn_pytree(x_tree, *dyn_args) -> residual_tree (same PyTree structure)
     x0_tree: PyTree (dicts, arrays…)
@@ -199,7 +168,7 @@ def newton_unravel(residual_fn_pytree, x0_tree, dyn_args,
         return r_flat
 
     x_fin_flat, iters = newton(res_flat, x0_flat, dyn_args, 
-                               tol, abs_tol, max_iter, method, rtol_disable_at)
+                               tol, abs_tol, max_iter)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
 
