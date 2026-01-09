@@ -125,7 +125,8 @@ def _newton_bwd(residual_fn, tol, abs_tol, max_iter, aux, ct):
         return residual_fn(x_star, *theta)
 
     Jx  = jax.jacfwd(F_x)(x_star)            # (n,n)
-    lam = jnp.linalg.solve(Jx.T, ct_x)   # Jx^T λ = \bar{x}
+    #lam = jnp.linalg.solve(Jx.T, ct_x)   # Jx^T λ = \bar{x}
+    lam = la_solve(Jx.T, ct_x, assume_a='gen')  # un poil plus robuste
 
     _, vjp_theta = jax.vjp(F_theta, *dyn_args) # Compute a (reverse-mode) vector-Jacobian product of F(theta).
     grads_theta  = vjp_theta(-lam)       # -(∂F/∂theta)^T λ
