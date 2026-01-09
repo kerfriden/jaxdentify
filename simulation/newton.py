@@ -199,7 +199,7 @@ def newton_unravel(residual_fn_pytree, x0_tree, dyn_args,
         return r_flat
 
     x_fin_flat, iters = newton(res_flat, x0_flat, dyn_args, 
-                               tol, abs_tol, max_iter, method="while", rtol_disable_at=1e-10)
+                               tol, abs_tol, max_iter, method, rtol_disable_at)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
 
@@ -212,7 +212,7 @@ def newton_implicit(residual_fn, x0, dyn_args,
                     tol=1e-8, abs_tol=1e-12, max_iter=100, method="while", rtol_disable_at=1e-10):
     #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
     x_star, iters = newton(residual_fn, x0, dyn_args, 
-                           tol, abs_tol, max_iter, method="while", rtol_disable_at=1e-10)
+                           tol, abs_tol, max_iter, method, rtol_disable_at)
     return x_star, iters
 
 # FWD MUST KEEP THE SAME ORDER AS THE PRIMAL
@@ -220,7 +220,7 @@ def _newton_fwd(residual_fn, x0, dyn_args,
                 tol=1e-8, abs_tol=1e-12, max_iter=100, method="while", rtol_disable_at=1e-10):
     #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
     x_star, iters = newton(residual_fn, x0, dyn_args, 
-                           tol, abs_tol, max_iter, method="while", rtol_disable_at=1e-10)
+                           tol, abs_tol, max_iter, method, rtol_disable_at)
     aux = (x_star, dyn_args)  # stash what we need
     return (x_star, iters), aux
 
@@ -267,7 +267,7 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
         return r_flat
 
     x_fin_flat, iters = newton_implicit(res_flat, x0_flat, dyn_args, 
-                                        tol, abs_tol, max_iter, method="while", rtol_disable_at=1e-10)
+                                        tol, abs_tol, max_iter, method, rtol_disable_at)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
 
