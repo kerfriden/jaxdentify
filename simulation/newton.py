@@ -37,6 +37,114 @@ def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     iters = jnp.where(done, iters, -1)
     return x_fin, iters
 
+import jax
+import jax.numpy as jnp
+from jax import lax
+from jax.scipy.linalg import solve as la_solve
+
+
+def newton(
+    residual_fn,
+    x0,
+    dyn_args=(),
+    tol=1e-8,
+    abs_tol=1e-10,
+    max_iter=100,
+    method="while",          # "while" or "scan"
+    rtol_disable_at=1e-10,   # if ||R0|| < this -> ignore relative tolerance (use abs_tol only)
+):
+    """
+    Solve residual_fn(x, *dyn_args) = 0 with Newton.
+
+    Convergence test:
+      if ||R0|| >= rtol_disable_at:
+          ||R|| < tol*||R0||  OR  ||R|| < abs_tol
+      else:
+          ||R|| < abs_tol     (relative tol deactivated)
+
+    method:
+      - "while": lax.while_loop with dynamic early exit
+      - "scan" : fixed-length lax.scan, but *no extra Newton step* once done
+                (the solve/Jacobian/residual computations are skipped after done=True)
+
+    Returns: (x_sol, iters)
+      iters = number of Newton steps actually executed, or -1 if not converged.
+    """
+    max_it  = int(max_iter)  # must be a Python int for scan length
+    x_dtype = getattr(x0, "dtype", jnp.float64)
+    tol     = jnp.asarray(tol, dtype=x_dtype)
+    abs_tol = jnp.asarray(abs_tol, dtype=x_dtype)
+    rtol_disable_at = jnp.asarray(rtol_disable_at, dtype=x_dtype)
+
+    def res(x):
+        return residual_fn(x, *dyn_args)
+
+    Jfun = jax.jacfwd(res)
+
+    R0   = res(x0)
+    Rini = jnp.linalg.norm(R0)
+
+    use_rel = Rini >= rtol_disable_at
+
+    def converged(nR):
+        return (nR < abs_tol) | (use_rel & (nR < tol * Rini))
+
+    nR0   = jnp.linalg.norm(R0)
+    done0 = converged(nR0)
+
+    if method == "while":
+        # Carry done so we never do an extra iteration after convergence.
+        def cond(carry):
+            x, i, done = carry
+            return (i < max_it) & (~done)
+
+        def body(carry):
+            x, i, _done = carry
+            R  = res(x)
+            J  = Jfun(x)
+            dx = la_solve(J, R, assume_a="gen")
+            x1 = x - dx
+
+            nR1   = jnp.linalg.norm(res(x1))
+            done1 = converged(nR1)
+            return (x1, i + 1, done1)
+
+        x_fin, iters, done_fin = lax.while_loop(cond, body, (x0, jnp.int32(0), done0))
+        iters = jnp.where(done_fin, iters, jnp.int32(-1))
+        return x_fin, iters
+
+    elif method == "scan":
+        # Fixed number of slots, but after done=True we skip all heavy work (no solve, no jacobian).
+        def keep(carry):
+            return carry
+
+        def step(carry):
+            x, done, iters = carry
+            R  = res(x)
+            J  = Jfun(x)
+            dx = la_solve(J, R, assume_a="gen")
+            x1 = x - dx
+
+            nR1   = jnp.linalg.norm(res(x1))
+            done1 = converged(nR1)
+            return (x1, done1, iters + jnp.int32(1))
+
+        def one_iter(carry, _):
+            carry2 = lax.cond(carry[1], keep, step, carry)  # if done, do nothing
+            return carry2, None
+
+        (x_fin, done_fin, iters), _ = lax.scan(
+            one_iter,
+            (x0, done0, jnp.int32(0)),
+            xs=None,
+            length=max_it,
+        )
+        iters = jnp.where(done_fin, iters, jnp.int32(-1))
+        return x_fin, iters
+
+    else:
+        raise ValueError(f"Unknown method={method!r}. Use 'while' or 'scan'.")
+
 # ----------------- dict/PyTree wrapper around array Newton -----------------
 def newton_unravel(residual_fn_pytree, x0_tree, dyn_args, tol=1e-6, abs_tol=1e-8, max_iter=100):
     """
