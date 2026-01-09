@@ -37,46 +37,6 @@ def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     iters = jnp.where(done, iters, -1)
     return x_fin, iters
 
-# safegard in case RIni is very small
-def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
-    x_dtype = x0.dtype
-    tol     = jnp.asarray(tol,     dtype=x_dtype)
-    abs_tol = jnp.asarray(abs_tol, dtype=x_dtype)
-
-    def res(x):
-        return residual_fn(x, *dyn_args)
-
-    Jfun = jax.jacfwd(res)
-
-    R0   = res(x0)
-    Rini = jnp.linalg.norm(R0)
-    Rini = jnp.where(jnp.isfinite(Rini), Rini, jnp.asarray(jnp.inf, x_dtype))
-
-    # safeguard if Rini is tiny/zero
-    Rref = jnp.maximum(Rini, abs_tol)
-
-    def cond(c):
-        x, i = c
-        nR = jnp.linalg.norm(res(x))
-        finite = jnp.isfinite(nR)
-
-        done = (~finite) | (nR < tol * Rref) | (nR < abs_tol)
-        return (i < max_iter) & (~done)
-
-    def body(c):
-        x, i = c
-        R = res(x)
-        J = Jfun(x)
-        dx = la_solve(J, R, assume_a="gen")
-        return (x - dx, i + 1)
-
-    x_fin, iters = lax.while_loop(cond, body, (x0, jnp.int32(0)))
-
-    nRend = jnp.linalg.norm(res(x_fin))
-    ok = jnp.isfinite(nRend) & ((nRend < tol * Rref) | (nRend < abs_tol))
-    iters = jnp.where(ok, iters, jnp.int32(-1))
-    return x_fin, iters
-
 # ----------------- dict/PyTree wrapper around array Newton -----------------
 def newton_unravel(residual_fn_pytree, x0_tree, dyn_args, tol=1e-6, abs_tol=1e-8, max_iter=100):
     """
