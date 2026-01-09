@@ -43,7 +43,7 @@ def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     tol     = jnp.asarray(tol,     dtype=x_dtype)
     abs_tol = jnp.asarray(abs_tol, dtype=x_dtype)
 
-    def res(x): 
+    def res(x):
         return residual_fn(x, *dyn_args)
 
     Jfun = jax.jacfwd(res)
@@ -52,13 +52,15 @@ def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     Rini = jnp.linalg.norm(R0)
     Rini = jnp.where(jnp.isfinite(Rini), Rini, jnp.asarray(jnp.inf, x_dtype))
 
+    # safeguard if Rini is tiny/zero
+    Rref = jnp.maximum(Rini, abs_tol)
+
     def cond(c):
         x, i = c
         nR = jnp.linalg.norm(res(x))
         finite = jnp.isfinite(nR)
 
-        done = (~finite) | (nR < tol * Rini) | (nR < abs_tol)
-
+        done = (~finite) | (nR < tol * Rref) | (nR < abs_tol)
         return (i < max_iter) & (~done)
 
     def body(c):
@@ -71,7 +73,7 @@ def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     x_fin, iters = lax.while_loop(cond, body, (x0, jnp.int32(0)))
 
     nRend = jnp.linalg.norm(res(x_fin))
-    ok = jnp.isfinite(nRend) & ( (nRend < abs_tol) | (use_relative & (nRend < tol * Rini)) | ((~use_relative) & (nRend < tol)) )
+    ok = jnp.isfinite(nRend) & ((nRend < tol * Rref) | (nRend < abs_tol))
     iters = jnp.where(ok, iters, jnp.int32(-1))
     return x_fin, iters
 
