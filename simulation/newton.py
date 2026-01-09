@@ -38,7 +38,7 @@ def newton(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     return x_fin, iters
 
 # depreciated
-def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100, rtol_disable_at=1e-10):
+def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     x_dtype = getattr(x0, "dtype", jnp.float64)
     tol     = jnp.asarray(tol,     dtype=x_dtype)
     abs_tol = jnp.asarray(abs_tol, dtype=x_dtype)
@@ -48,8 +48,6 @@ def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_it
 
     R0   = res(x0)
     Rini = jnp.linalg.norm(R0)
-
-    use_rel = Rini >= rtol_disable_at
 
     def do_iter(x, iters):
         R  = res(x)
@@ -209,20 +207,18 @@ def newton_unravel(residual_fn_pytree, x0_tree, dyn_args,
 # Implicit-gradient Newton via custom VJP (IFT-based)
 # nondiff_argnums: residual_fn, tol, abs_tol, max_iter are static
 # ----------------------------------------------------------
-@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5, 6))
+@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5))
 def newton_implicit(residual_fn, x0, dyn_args, 
-                    tol=1e-8, abs_tol=1e-12, max_iter=100, method="while", rtol_disable_at=1e-10):
-    #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
+                    tol=1e-8, abs_tol=1e-12, max_iter=100):
     x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, 
-                           tol, abs_tol, max_iter, method, rtol_disable_at)
+                           tol, abs_tol, max_iter)
     return x_star, iters
 
 # FWD MUST KEEP THE SAME ORDER AS THE PRIMAL
 def _newton_fwd(residual_fn, x0, dyn_args, 
-                tol=1e-8, abs_tol=1e-12, max_iter=100, rtol_disable_at=1e-10):
-    #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
+                tol=1e-8, abs_tol=1e-12, max_iter=100):
     x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, 
-                           tol, abs_tol, max_iter, rtol_disable_at)
+                           tol, abs_tol, max_iter)
     aux = (x_star, dyn_args)  # stash what we need
     return (x_star, iters), aux
 
@@ -257,7 +253,7 @@ newton_implicit.defvjp(_newton_fwd, _newton_bwd)
 
 from jax import tree_util as jtu
 def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
-                            tol=1e-6, abs_tol=1e-8, max_iter=100, method="while", rtol_disable_at=1e-10):
+                            tol=1e-6, abs_tol=1e-8, max_iter=100):
     # Create the ravel/unravel utilities from a *non-differentiable* template
     x0_template = jtu.tree_map(lax.stop_gradient, x0_tree) 
     x0_flat, unravel_x = ravel_pytree(x0_template)
@@ -269,7 +265,7 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
         return r_flat
 
     x_fin_flat, iters = newton_implicit(res_flat, x0_flat, dyn_args, 
-                                        tol, abs_tol, max_iter, method, rtol_disable_at)
+                                        tol, abs_tol, max_iter)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
 
