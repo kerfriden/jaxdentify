@@ -162,10 +162,11 @@ def sample_theta(space, key, n=1):
     return jnp.concatenate(thetas, axis=-1) if thetas else jnp.zeros((n, 0), dtype=jnp.float32)
 
 # --- generic loss function with parameter unpacking (vectorised to dictionary) --
-def make_loss(space, simulate_and_loss):
+def make_loss(space, simulate_and_loss, use_projection=True):
     @jax.jit
     def loss(theta):
-        theta_  = project_theta(space, theta)
+        if use_projection: # for stability
+            theta_  = project_theta(space, theta)
         params  = to_params(space, theta_)
         return simulate_and_loss(params)
     return loss
