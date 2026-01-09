@@ -207,7 +207,7 @@ def newton_unravel(residual_fn_pytree, x0_tree, dyn_args,
 # Implicit-gradient Newton via custom VJP (IFT-based)
 # nondiff_argnums: residual_fn, tol, abs_tol, max_iter are static
 # ----------------------------------------------------------
-@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5))
+@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5, 6, 7))
 def newton_implicit(residual_fn, x0, dyn_args, 
                     tol=1e-8, abs_tol=1e-12, max_iter=100, method="while", rtol_disable_at=1e-10):
     #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
