@@ -107,8 +107,9 @@ def newton_implicit(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter
     return x_star, iters
 
 # FWD MUST KEEP THE SAME ORDER AS THE PRIMAL
-def _newton_fwd(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=10):
-    x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
+def _newton_fwd(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
+    #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
+    x_star, iters = newton(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
     aux = (x_star, dyn_args)  # stash what we need
     return (x_star, iters), aux
 
