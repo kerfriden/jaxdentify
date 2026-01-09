@@ -57,7 +57,7 @@ def newton_unravel(residual_fn_pytree, x0_tree, dyn_args, tol=1e-6, abs_tol=1e-8
     return x_fin_tree, iters
 
 
-def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=10):
+def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
     x_dtype = getattr(x0, "dtype", jnp.float64)
     tol     = jnp.asarray(tol,     dtype=x_dtype)
     abs_tol = jnp.asarray(abs_tol, dtype=x_dtype)
@@ -71,7 +71,8 @@ def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_it
     def do_iter(x, iters):
         R  = res(x)
         J  = Jfun(x)
-        dx = jnp.linalg.solve(J, R)
+        #dx = jnp.linalg.solve(J, R)
+        dx = la_solve(J, R, assume_a='gen')  # un poil plus robuste
         x_cand = x - dx
         nR = jnp.linalg.norm(res(x_cand))
         conv_now = (nR < tol * Rini) | (nR < abs_tol)
@@ -100,8 +101,9 @@ def newton_fixed_scan(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_it
 # nondiff_argnums: residual_fn, tol, abs_tol, max_iter are static
 # ----------------------------------------------------------
 @partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5))
-def newton_implicit(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=10):
-    x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
+def newton_implicit(residual_fn, x0, dyn_args, tol=1e-8, abs_tol=1e-12, max_iter=100):
+    #x_star, iters = newton_fixed_scan(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
+    x_star, iters = newton(residual_fn, x0, dyn_args, tol, abs_tol, max_iter)
     return x_star, iters
 
 # FWD MUST KEEP THE SAME ORDER AS THE PRIMAL
@@ -161,7 +163,7 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
 
 
 
-def newton_optx( residual_fn_pytree,x0_tree,dyn_args,tol=1e-8,abs_tol=1e-12,max_iter=50):
+def newton_optx( residual_fn_pytree,x0_tree,dyn_args,tol=1e-8,abs_tol=1e-12, max_iter=100):
     
     import optimistix as optx
 
@@ -198,7 +200,7 @@ def newton_optx(
     nondiff_args,    # pytree: NO gradients (stop_gradient applied)
     tol=1e-8,
     abs_tol=1e-12,
-    max_iter=50,
+    max_iter=100,
 ):
     """
     Newton using Optimistix with two sets of arguments:
