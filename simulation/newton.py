@@ -277,6 +277,84 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
 
 
 
+
+
+# -------------- to be checked
+
+@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5, 6, 7))
+def newton_implicit(
+    residual_fn,
+    x0,
+    dyn_args=(),
+    tol=1e-8,
+    abs_tol=1e-10,
+    max_iter=100,
+    method="while",
+    rtol_disable_at=1e-10,
+):
+    return newton(residual_fn, x0, dyn_args, tol, abs_tol, max_iter, method, rtol_disable_at)
+
+def _newton_fwd(
+    residual_fn, x0, dyn_args, tol, abs_tol, max_iter, method, rtol_disable_at
+):
+    x_star, iters = newton(residual_fn, x0, dyn_args, tol, abs_tol, max_iter, method, rtol_disable_at)
+    aux = (x_star, dyn_args)
+    return (x_star, iters), aux
+
+def _newton_bwd(
+    residual_fn, tol, abs_tol, max_iter, method, rtol_disable_at, aux, ct
+):
+    x_star, dyn_args = aux
+    ct_x, _ct_iters = ct  # ignore integer cotangent
+
+    def F_x(x):
+        return residual_fn(x, *dyn_args)
+
+    def F_theta(*theta):
+        return residual_fn(x_star, *theta)
+
+    Jx  = jax.jacfwd(F_x)(x_star)
+    lam = la_solve(Jx.T, ct_x, assume_a="gen")
+
+    _, vjp_theta = jax.vjp(F_theta, *dyn_args)
+    grads_theta  = vjp_theta(-lam)
+
+    grad_x0 = jnp.zeros_like(x_star)
+    return grad_x0, grads_theta  # matches differentiable args: (x0, dyn_args)
+
+newton_implicit.defvjp(_newton_fwd, _newton_bwd)
+
+def newton_implicit_unravel(
+    residual_fn_pytree,
+    x0_tree,
+    dyn_args=(),
+    tol=1e-6,
+    abs_tol=1e-8,
+    max_iter=100,
+    method="while",
+    rtol_disable_at=1e-10,
+):
+    # stop_gradient template is fine (keeps structure stable)
+    x0_template = jtu.tree_map(lax.stop_gradient, x0_tree)
+    x0_flat, unravel_x = ravel_pytree(x0_template)
+
+    def res_flat(x_flat, *dyn):
+        x_tree = unravel_x(x_flat)
+        r_tree = residual_fn_pytree(x_tree, *dyn)
+        r_flat, _ = ravel_pytree(r_tree)
+        return r_flat
+
+    # IMPORTANT: pass method/rtol_disable_at through (they are static now)
+    x_fin_flat, iters = newton_implicit(
+        res_flat, x0_flat, dyn_args, tol, abs_tol, max_iter, method, rtol_disable_at
+    )
+    return unravel_x(x_fin_flat), iters
+
+# ----------------------
+
+
+
+
 def newton_optx( residual_fn_pytree,x0_tree,dyn_args,
                 tol=1e-8,abs_tol=1e-12, max_iter=100):
     
