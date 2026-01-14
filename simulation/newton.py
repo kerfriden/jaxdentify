@@ -257,6 +257,14 @@ def _newton_split_fwd(residual_fn, x0, diff_args, nondiff_args,
     aux = (x_star, diff_args, nondiff_args_ng)
     return (x_star, iters), aux
 
+def _zeros_or_none_like_tree(tree):
+    def f(x):
+        # floats -> zeros; ints/bools/objects -> None
+        if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.inexact):
+            return jnp.zeros_like(x)
+        return None
+    return jax.tree.map(f, tree)
+
 def _newton_split_bwd(residual_fn, tol, abs_tol, max_iter, aux, ct):
     x_star, diff_args, nondiff_args_ng = aux
     ct_x, _ct_iters = ct
