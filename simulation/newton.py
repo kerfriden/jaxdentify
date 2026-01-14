@@ -257,7 +257,7 @@ def _newton_split_fwd(residual_fn, x0, diff_args, nondiff_args,
     aux = (x_star, diff_args, nondiff_args_ng)
     return (x_star, iters), aux
 
-def _newton_split_bwd(residual_fn, nondiff_args, tol, abs_tol, max_iter, aux, ct):
+def _newton_split_bwd(residual_fn, tol, abs_tol, max_iter, aux, ct):
     x_star, diff_args, nondiff_args_ng = aux
     ct_x, _ct_iters = ct
 
@@ -286,7 +286,7 @@ def _newton_split_bwd(residual_fn, nondiff_args, tol, abs_tol, max_iter, aux, ct
     # args: (residual_fn, x0, diff_args, nondiff_args, tol, abs_tol, max_iter)
     grad_x0 = jnp.zeros_like(x_star)
     grad_nondiff = _zeros_or_none_like_tree(nondiff_ng)
-    return (None, grad_x0, grad_diff, grad_nondiff)
+    return (grad_x0, grad_diff_args, grad_nondiff_args)
 
 newton_implicit_split.defvjp(_newton_split_fwd, _newton_split_bwd)
 
