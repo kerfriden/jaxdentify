@@ -237,6 +237,8 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
     return x_fin_tree, iters
 
 
+# dynamic arguments can now be split into arguments that can be differentiated
+# and those that cannot / should not
 @partial(jax.custom_vjp, nondiff_argnums=(0, 4, 5, 6))
 def newton_implicit_split(residual_fn, x0, diff_args, nondiff_args,
                           tol=1e-8, abs_tol=1e-12, max_iter=100):
@@ -280,8 +282,11 @@ def _newton_split_bwd(residual_fn, nondiff_args, tol, abs_tol, max_iter, aux, ct
     _, vjp = jax.vjp(F_theta, diff_args)
     (grad_diff_args,) = vjp(-lam)
 
+    # MUST return grads for ALL primal args, including nondiff ones as None:
+    # args: (residual_fn, x0, diff_args, nondiff_args, tol, abs_tol, max_iter)
     grad_x0 = jnp.zeros_like(x_star)
-    return grad_x0, grad_diff_args
+    grad_nondiff = _zeros_or_none_like_tree(nondiff_ng)
+    return (None, grad_x0, grad_diff, grad_nondiff)
 
 newton_implicit_split.defvjp(_newton_split_fwd, _newton_split_bwd)
 
