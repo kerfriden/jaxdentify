@@ -298,7 +298,7 @@ def newton_implicit_split_unravel(residual_fn_pytree, x0_tree, diff_args, nondif
         r_flat, _ = ravel_pytree(r_tree)
         return r_flat
 
-    x_fin_flat, iters = newton_implicit(res_flat, x0_flat, diff_args, nondiff_args, 
+    x_fin_flat, iters = newton_implicit_split(res_flat, x0_flat, diff_args, nondiff_args, 
                                         tol, abs_tol, max_iter)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
