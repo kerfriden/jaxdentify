@@ -237,7 +237,7 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
     return x_fin_tree, iters
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5, 6))
+@partial(jax.custom_vjp, nondiff_argnums=(0, 4, 5, 6))
 def newton_implicit_split(residual_fn, x0, diff_args, nondiff_args,
                           tol=1e-8, abs_tol=1e-12, max_iter=100):
     # residual_fn(x, diff_args, nondiff_args) -> (m,)
