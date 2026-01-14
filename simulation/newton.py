@@ -285,6 +285,26 @@ def _newton_split_bwd(residual_fn, nondiff_args, tol, abs_tol, max_iter, aux, ct
 
 newton_implicit_split.defvjp(_newton_split_fwd, _newton_split_bwd)
 
+from jax import tree_util as jtu
+def newton_implicit_unravel(residual_fn_pytree, x0_tree, diff_args, nondiff_args,
+                            tol=1e-6, abs_tol=1e-8, max_iter=100):
+    # Create the ravel/unravel utilities from a *non-differentiable* template
+    x0_template = jtu.tree_map(lax.stop_gradient, x0_tree) 
+    x0_flat, unravel_x = ravel_pytree(x0_template)
+
+    def res_flat(x_flat, *dyn):
+        x_tree = unravel_x(x_flat)
+        r_tree = residual_fn_pytree(x_tree, *dyn)
+        r_flat, _ = ravel_pytree(r_tree)
+        return r_flat
+
+    x_fin_flat, iters = newton_implicit(res_flat, x0_flat, diff_args, nondiff_args, 
+                                        tol, abs_tol, max_iter)
+    x_fin_tree = unravel_x(x_fin_flat)
+    return x_fin_tree, iters
+
+
+
 
 
 def newton_optx( residual_fn_pytree,x0_tree,dyn_args,
