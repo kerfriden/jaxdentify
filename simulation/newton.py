@@ -293,7 +293,8 @@ def _newton_split_bwd(residual_fn, tol, abs_tol, max_iter, aux, ct):
     # MUST return grads for ALL primal args, including nondiff ones as None:
     # args: (residual_fn, x0, diff_args, nondiff_args, tol, abs_tol, max_iter)
     grad_x0 = jnp.zeros_like(x_star)
-    grad_nondiff = _zeros_or_none_like_tree(nondiff_ng)
+    grad_nondiff_args = _zeros_or_none_like_tree(nondiff_ng)
+    #return (grad_x0, grad_diff_args, None)
     return (grad_x0, grad_diff_args, grad_nondiff_args)
 
 newton_implicit_split.defvjp(_newton_split_fwd, _newton_split_bwd)
