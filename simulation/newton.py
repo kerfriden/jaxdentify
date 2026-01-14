@@ -216,7 +216,7 @@ newton_implicit.defvjp(_newton_fwd, _newton_bwd)
 # Optional JIT wrapper (residual_fn static)
 #newton_implicit_jit = jax.jit(newton_implicit, static_argnums=(0,))
 
-# ----------------- dict/PyTree wrapper around array Newton (depreciated) -----------------
+# ----------------- dict/PyTree wrapper around array Newton -----------------
 
 from jax import tree_util as jtu
 def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
@@ -235,6 +235,55 @@ def newton_implicit_unravel(residual_fn_pytree, x0_tree, dyn_args,
                                         tol, abs_tol, max_iter)
     x_fin_tree = unravel_x(x_fin_flat)
     return x_fin_tree, iters
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4, 5, 6))
+def newton_implicit_split(residual_fn, x0, diff_args, nondiff_args,
+                          tol=1e-8, abs_tol=1e-12, max_iter=100):
+    # residual_fn(x, diff_args, nondiff_args) -> (m,)
+    dyn = (diff_args, nondiff_args)
+    x_star, iters = newton_fixed_scan(residual_fn, x0, dyn, tol, abs_tol, max_iter)
+    return x_star, iters
+
+def _newton_split_fwd(residual_fn, x0, diff_args, nondiff_args,
+                      tol=1e-8, abs_tol=1e-12, max_iter=100):
+    dyn = (diff_args, nondiff_args)
+    x_star, iters = newton_fixed_scan(residual_fn, x0, dyn, tol, abs_tol, max_iter)
+
+    # Freeze nondiff args for safety in backward (no grads anyway)
+    nondiff_args_ng = jax.tree.map(lax.stop_gradient, nondiff_args)
+    aux = (x_star, diff_args, nondiff_args_ng)
+    return (x_star, iters), aux
+
+def _newton_split_bwd(residual_fn, nondiff_args, tol, abs_tol, max_iter, aux, ct):
+    x_star, diff_args, nondiff_args_ng = aux
+    ct_x, _ct_iters = ct
+
+    # F(x) at solution
+    def F_x(x):
+        return residual_fn(x, diff_args, nondiff_args_ng)
+
+    # Jacobian wrt x
+    Jx = jax.jacfwd(F_x)(x_star)                 # (m,n)
+    # Usually m==n for Newton, but if not, you need least-squares/normal eqns.
+
+    # Solve Jx^T lam = ct_x with small regularization to avoid NaN grads
+    n = Jx.shape[1]
+    eps = jnp.array(1e-10, dtype=Jx.dtype)       # bump to 1e-8 if needed
+    A = Jx.T + eps * jnp.eye(n, dtype=Jx.dtype)
+    lam = la_solve(A, ct_x, assume_a="gen")
+
+    # VJP only wrt diff_args
+    def F_theta(diff_args_):
+        return residual_fn(x_star, diff_args_, nondiff_args_ng)
+
+    _, vjp = jax.vjp(F_theta, diff_args)
+    (grad_diff_args,) = vjp(-lam)
+
+    grad_x0 = jnp.zeros_like(x_star)
+    return grad_x0, grad_diff_args
+
+newton_implicit_split.defvjp(_newton_split_fwd, _newton_split_bwd)
 
 
 
