@@ -272,11 +272,10 @@ def _newton_split_bwd(residual_fn, tol, abs_tol, max_iter, aux, ct):
     x_star, diff_args, nondiff_ng = aux
     ct_x, _ = ct
 
-    # IMPORTANT: call residual_fn(x, diff_args, nondiff_args)
     def F_x(x):
         return residual_fn(x, diff_args, nondiff_ng)
 
-    Jx = jax.jacfwd(F_x)(x_star)          # (n,n) usually
+    Jx = jax.jacfwd(F_x)(x_star)         
     lam = la_solve(Jx.T, ct_x, assume_a="gen")
 
     def F_theta(diff_args_):
