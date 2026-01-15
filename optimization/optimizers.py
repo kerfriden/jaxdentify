@@ -4,6 +4,7 @@ from jax import jit, value_and_grad
 from typing import Callable, Optional, Tuple, Dict, Any
 
 
+
 class BFGSState(tuple):
     __slots__ = ()
     # x, f, g, H, k
@@ -179,7 +180,6 @@ def fd_grad(
 
     g = jnp.stack(g).reshape(x.shape)
     return g
-
 
 def bfgs_fd(
     loss_fn: Callable[[jnp.ndarray], jnp.ndarray],
@@ -368,10 +368,7 @@ def bfgs_fd(
 
 
 
-import jax
-import jax.numpy as jnp
-from jax import jit, value_and_grad
-from typing import Callable, Optional, Tuple, Dict, Any
+
 
 def _cosine_lr(lr0, t, T, lr_min=0.0):
     # t in [0, T]
