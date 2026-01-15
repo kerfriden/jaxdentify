@@ -365,3 +365,107 @@ def bfgs_fd(
 
     info = {"n_fval": fevals, "n_gval": gevals, "iters": int(st[4])}
     return st[0], float(st[1]), info
+
+
+
+import jax
+import jax.numpy as jnp
+from jax import jit, value_and_grad
+from typing import Callable, Optional, Tuple, Dict, Any
+
+def _cosine_lr(lr0, t, T, lr_min=0.0):
+    # t in [0, T]
+    c = 0.5 * (1.0 + jnp.cos(jnp.pi * (t / jnp.maximum(T, 1))))
+    return lr_min + (lr0 - lr_min) * c
+
+def adamw(
+    loss_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    theta0: jnp.ndarray,
+    *,
+    max_iter: int = 5000,
+    lr: float = 1e-3,
+    betas: Tuple[float, float] = (0.9, 0.999),
+    eps: float = 1e-8,
+    weight_decay: float = 0.0,     # AdamW decoupled weight decay
+    gtol: float = 1e-7,
+    rtol: Optional[float] = None,  # stop when f <= rtol * f_init
+    clip_norm: Optional[float] = 1.0,   # set None to disable
+    lr_schedule: str = "constant", # "constant" or "cosine"
+    lr_min: float = 0.0,           # for cosine
+    n_display: Optional[int] = None,
+    # Nonconvex helpers:
+    grad_noise: float = 0.0,       # add N(0, grad_noise^2) to grads (helps escape shallow traps)
+    seed: int = 0,
+) -> Tuple[jnp.ndarray, float, Dict[str, Any]]:
+    """
+    Gradient-based optimizer for nasty nonconvex problems.
+    Uses autodiff gradients (value_and_grad).
+    """
+    loss_fg = jit(value_and_grad(loss_fn))
+    key = jax.random.PRNGKey(seed)
+
+    x = jnp.asarray(theta0)
+    m = jnp.zeros_like(x)
+    v = jnp.zeros_like(x)
+
+    f, g = loss_fg(x)
+    _ = f.block_until_ready()
+    f_init = float(f)
+
+    fevals = 1
+    gevals = 1
+
+    if n_display:
+        print(f"[AdamW] it 0: f={float(f):.6e}, ||g||={float(jnp.linalg.norm(g)):.3e}")
+
+    b1, b2 = betas
+
+    for t in range(1, int(max_iter) + 1):
+        # stop
+        gn = float(jnp.linalg.norm(g))
+        if gn <= gtol or (rtol is not None and float(f) <= rtol * f_init):
+            break
+
+        # lr schedule
+        if lr_schedule == "cosine":
+            lr_t = float(_cosine_lr(lr, t, max_iter, lr_min))
+        else:
+            lr_t = float(lr)
+
+        # add gradient noise (optional)
+        if grad_noise > 0.0:
+            key, sub = jax.random.split(key)
+            g = g + grad_noise * jax.random.normal(sub, shape=g.shape, dtype=g.dtype)
+
+        # clip (optional)
+        if clip_norm is not None:
+            gnorm = jnp.linalg.norm(g)
+            g = jnp.where(gnorm > clip_norm, g * (clip_norm / (gnorm + 1e-16)), g)
+
+        # NaN/inf guard: if gradient is bad, shrink step + reset moments
+        if not bool(jnp.all(jnp.isfinite(g)) & jnp.isfinite(f)):
+            m = jnp.zeros_like(m)
+            v = jnp.zeros_like(v)
+            lr_t = lr_t * 0.1
+
+        # Adam moments
+        m = b1 * m + (1.0 - b1) * g
+        v = b2 * v + (1.0 - b2) * (g * g)
+
+        # bias correction
+        mhat = m / (1.0 - (b1 ** t))
+        vhat = v / (1.0 - (b2 ** t))
+
+        # AdamW update (decoupled WD)
+        x = x - lr_t * (mhat / (jnp.sqrt(vhat) + eps) + weight_decay * x)
+
+        # eval
+        f, g = loss_fg(x)
+        fevals += 1
+        gevals += 1
+
+        if n_display and (t % n_display == 0):
+            print(f"[AdamW] it {t}: f={float(f):.6e}, ||g||={float(jnp.linalg.norm(g)):.3e}, lr={lr_t:.3e}")
+
+    info = {"n_fval": fevals, "n_gval": gevals, "iters": int(t), "f_init": f_init}
+    return x, float(f), info
