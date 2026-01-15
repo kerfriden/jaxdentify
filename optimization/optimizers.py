@@ -466,3 +466,178 @@ def adamw(
 
     info = {"n_fval": fevals, "n_gval": gevals, "iters": int(t), "f_init": f_init}
     return x, float(f), info
+
+
+
+
+def cma_es(
+    loss_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    theta0: jnp.ndarray,
+    *,
+    max_iter: Optional[int] = None,
+    gtol: float = 1e-11,           # here: stop when sigma*max(sqrt(eig(C))) <= gtol
+    rtol: Optional[float] = None,  # stop when f_best <= rtol * f_init (if provided)
+    sigma0: float = 0.3,
+    popsize: Optional[int] = None,
+    seed: int = 0,
+    eigen_update_period: Optional[int] = None,
+    n_display: Optional[int] = None,
+) -> Tuple[jnp.ndarray, float, Dict[str, Any]]:
+    """
+    CMA-ES (derivative-free), same return style as your BFGS: (theta_best, f_best, info).
+    Uses only loss evaluations (no autodiff). Deterministic given `seed`.
+
+    Notes:
+      - `gtol` is an x-step tolerance surrogate for CMA-ES: sigma * max_axis_std <= gtol.
+      - `rtol` compares objective to the initial objective, like your BFGS.
+    """
+    x0 = jnp.asarray(theta0)
+    dtype = x0.dtype
+    n = int(x0.size)
+
+    if max_iter is None:
+        max_iter = 200 * n
+
+    # default population size
+    if popsize is None:
+        popsize = int(4 + jnp.floor(3.0 * jnp.log(n)).astype(int))
+    lam = int(popsize)
+    mu = lam // 2
+
+    # recombination weights (positive)
+    w = jnp.log(mu + 0.5) - jnp.log(jnp.arange(1, mu + 1))
+    w = w / jnp.sum(w)
+    mu_eff = 1.0 / jnp.sum(w * w)
+
+    # strategy params (standard-ish defaults)
+    cc = (4.0 + mu_eff / n) / (n + 4.0 + 2.0 * mu_eff / n)
+    cs = (mu_eff + 2.0) / (n + mu_eff + 5.0)
+    c1 = 2.0 / ((n + 1.3) ** 2 + mu_eff)
+    cmu = min(1.0 - c1, 2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((n + 2.0) ** 2 + mu_eff))
+    damps = 1.0 + 2.0 * max(0.0, jnp.sqrt((mu_eff - 1.0) / (n + 1.0)) - 1.0) + cs
+
+    # heuristics
+    chi_n = jnp.sqrt(n) * (1.0 - 1.0 / (4.0 * n) + 1.0 / (21.0 * n * n))
+
+    # state
+    m = x0
+    sigma = jnp.array(sigma0, dtype=dtype)
+    C = jnp.eye(n, dtype=dtype)
+    pc = jnp.zeros((n,), dtype=dtype)
+    ps = jnp.zeros((n,), dtype=dtype)
+
+    # eigendecomp cache
+    B = jnp.eye(n, dtype=dtype)
+    D = jnp.ones((n,), dtype=dtype)  # sqrt(eigvals)
+    invsqrtC = jnp.eye(n, dtype=dtype)
+
+    if eigen_update_period is None:
+        # common cheap schedule: update every ~ O(1/(c1+cmu))/n steps, at least 1
+        eigen_update_period = max(1, int(jnp.floor(1.0 / (10.0 * n * (c1 + cmu + 1e-16))).astype(int)))
+
+    key = jax.random.PRNGKey(seed)
+
+    # JIT + VMAP for population evaluation only
+    loss_batched = jax.jit(jax.vmap(loss_fn))
+
+    f0 = float(loss_fn(m))
+    best_x = m
+    best_f = jnp.asarray(f0, dtype=dtype)
+
+    n_fval = 1
+
+    if n_display:
+        print(f"[CMA-ES] it 0: f={float(best_f):.6e}, sigma={float(sigma):.3e}, pop={lam}")
+
+    for it in range(1, int(max_iter) + 1):
+        # stop on step-size tolerance
+        step_scale = float(sigma * jnp.max(D))
+        if step_scale <= float(gtol):
+            break
+        if rtol is not None and float(best_f) <= float(rtol) * f0:
+            break
+
+        # update eigen decomposition occasionally
+        if (it - 1) % int(eigen_update_period) == 0:
+            # ensure symmetry
+            C = 0.5 * (C + C.T)
+            eigvals, eigvecs = jnp.linalg.eigh(C)
+            # numerical floor to avoid NaNs
+            eigvals = jnp.maximum(eigvals, jnp.asarray(1e-24, dtype=dtype))
+            B = eigvecs
+            D = jnp.sqrt(eigvals)
+            invsqrtC = B @ jnp.diag(1.0 / D) @ B.T
+
+        # sample population: x = m + sigma * (B diag(D) z)
+        key, sub = jax.random.split(key)
+        Z = jax.random.normal(sub, (lam, n), dtype=dtype)  # (lam,n)
+
+        A = B * D  # columns scaled by D (broadcast)
+        Y = Z @ A.T  # (lam,n)  each row is y_k
+        X = m[None, :] + sigma * Y  # (lam,n)
+
+        F = loss_batched(X)  # (lam,)
+        n_fval += lam
+
+        # sort
+        idx = jnp.argsort(F)
+        idx_mu = idx[:mu]
+
+        X_mu = X[idx_mu]
+        Y_mu = Y[idx_mu]
+        F_mu = F[idx_mu]
+
+        # update best
+        fmin = F[idx[0]]
+        xmin = X[idx[0]]
+        better = fmin < best_f
+        best_f = jnp.where(better, fmin, best_f)
+        best_x = jnp.where(better, xmin, best_x)
+
+        # recombination
+        y_w = jnp.sum(Y_mu * w[:, None], axis=0)  # (n,)
+        m_new = m + sigma * y_w
+
+        # evolution path for sigma
+        ps_new = (1.0 - cs) * ps + jnp.sqrt(cs * (2.0 - cs) * mu_eff) * (invsqrtC @ y_w)
+
+        # hsig
+        ps_norm = jnp.linalg.norm(ps_new)
+        # correction for finite horizon
+        hsig = ps_norm / jnp.sqrt(1.0 - (1.0 - cs) ** (2.0 * it)) < (1.4 + 2.0 / (n + 1.0)) * chi_n
+        hsig_f = jnp.asarray(hsig, dtype=dtype)
+
+        # evolution path for covariance
+        pc_new = (1.0 - cc) * pc + hsig_f * jnp.sqrt(cc * (2.0 - cc) * mu_eff) * y_w
+
+        # rank-mu update term
+        # sum_i w_i * y_i y_i^T
+        C_mu = jnp.zeros_like(C)
+        for i in range(mu):
+            yi = Y_mu[i]
+            C_mu = C_mu + w[i] * jnp.outer(yi, yi)
+
+        # covariance update
+        delta_h = (1.0 - hsig_f) * cc * (2.0 - cc)
+        C_new = (1.0 - c1 - cmu) * C + c1 * (jnp.outer(pc_new, pc_new) + delta_h * C) + cmu * C_mu
+
+        # step-size update
+        sigma_new = sigma * jnp.exp((cs / damps) * (ps_norm / chi_n - 1.0))
+
+        # commit
+        m, ps, pc, C, sigma = m_new, ps_new, pc_new, C_new, sigma_new
+
+        if n_display and (it % n_display == 0):
+            print(f"[CMA-ES] it {it}: fbest={float(best_f):.6e}, fgen={float(fmin):.6e}, "
+                  f"sigma={float(sigma):.3e}, step={float(sigma*jnp.max(D)):.3e}, fe={n_fval}")
+
+    info = {
+        "n_fval": int(n_fval),
+        "iters": int(it - 1),
+        "sigma": float(sigma),
+        "popsize": int(lam),
+        "mu": int(mu),
+        "seed": int(seed),
+    }
+    return best_x, float(best_f), info
+
