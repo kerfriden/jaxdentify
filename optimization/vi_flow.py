@@ -70,6 +70,9 @@ def fit_gaussian_vi(
     lr=0.01,
     verbose=True,
     print_every=None,
+    log_sigma_min: float = -20.0,
+    log_sigma_max: float = 5.0,
+    grad_clip_norm: float | None = 10.0,
     *,
     mu0=None,
     log_sigma0=None,
@@ -99,9 +102,28 @@ def fit_gaussian_vi(
     def step(key_in, mu_in, log_sigma_in):
         key_out, k_elbo = random.split(key_in)
         elbo, (grad_mu, grad_log_sigma) = elbo_grad(mu_in, log_sigma_in, k_elbo)
-        mu_out = mu_in + lr * grad_mu
-        log_sigma_out = log_sigma_in + lr * grad_log_sigma
-        return key_out, mu_out, log_sigma_out, elbo
+
+        # Robustness: clip global gradient norm to avoid NaNs/overflow when
+        # differentiating through implicit solvers.
+        if grad_clip_norm is not None:
+            g2 = jnp.sum(grad_mu * grad_mu) + jnp.sum(grad_log_sigma * grad_log_sigma)
+            gnorm = jnp.sqrt(g2 + 1e-32)
+            scale = jnp.minimum(1.0, (jnp.asarray(grad_clip_norm) / (gnorm + 1e-12)))
+            grad_mu = grad_mu * scale
+            grad_log_sigma = grad_log_sigma * scale
+
+        mu_prop = mu_in + lr * grad_mu
+        log_sigma_prop = log_sigma_in + lr * grad_log_sigma
+        log_sigma_prop = jnp.clip(log_sigma_prop, a_min=log_sigma_min, a_max=log_sigma_max)
+
+        ok = jnp.isfinite(elbo)
+        ok = ok & jnp.all(jnp.isfinite(mu_prop))
+        ok = ok & jnp.all(jnp.isfinite(log_sigma_prop))
+
+        mu_out = jnp.where(ok, mu_prop, mu_in)
+        log_sigma_out = jnp.where(ok, log_sigma_prop, log_sigma_in)
+        elbo_out = jnp.where(ok, elbo, -jnp.inf)
+        return key_out, mu_out, log_sigma_out, elbo_out
 
     # Default printing cadence: ~10 updates.
     if print_every is None:
