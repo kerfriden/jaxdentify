@@ -59,6 +59,7 @@ def fit_gaussian_vi(
     n_samples=10,
     lr=0.01,
     verbose=True,
+    print_every=None,
     *,
     mu0=None,
     log_sigma0=None,
@@ -79,28 +80,52 @@ def fit_gaussian_vi(
     else:
         log_sigma = jnp.asarray(log_sigma0)
     
-    def elbo_fn(mu, log_sigma, key):
-        return gaussian_vi_elbo(logpi, mu, log_sigma, key, n_samples)
-    
+    def elbo_fn(mu, log_sigma, key_in):
+        return gaussian_vi_elbo(logpi, mu, log_sigma, key_in, n_samples)
+
     elbo_grad = jax.value_and_grad(elbo_fn, argnums=(0, 1))
-    
+
+    @jax.jit
+    def step(key_in, mu_in, log_sigma_in):
+        key_out, k_elbo = random.split(key_in)
+        elbo, (grad_mu, grad_log_sigma) = elbo_grad(mu_in, log_sigma_in, k_elbo)
+        mu_out = mu_in + lr * grad_mu
+        log_sigma_out = log_sigma_in + lr * grad_log_sigma
+        return key_out, mu_out, log_sigma_out, elbo
+
+    # Default printing cadence: ~10 updates.
+    if print_every is None:
+        print_every = max(1, int(n_iters) // 10) if int(n_iters) > 0 else 1
+    else:
+        print_every = max(1, int(print_every))
+
     elbo_history = []
-    
-    for i in range(n_iters):
-        key, k_elbo = random.split(key)
-        elbo, (grad_mu, grad_log_sigma) = elbo_grad(mu, log_sigma, k_elbo)
-        
-        mu = mu + lr * grad_mu
-        log_sigma = log_sigma + lr * grad_log_sigma
-        
+
+    # First call compiles the full VI step (can be heavy for implicit solvers).
+    if int(n_iters) > 0:
+        key, mu, log_sigma, elbo0 = step(key, mu, log_sigma)
+        # Synchronize so compilation time isn't hidden.
+        (mu.block_until_ready() if hasattr(mu, "block_until_ready") else mu)
+        elbo_history.append(float(elbo0))
+        if verbose:
+            print(
+                f"Iter {0:4d}: ELBO = {float(elbo0):.4f}, "
+                f"||mu|| = {float(jnp.linalg.norm(mu)):.4f}, "
+                f"mean(sigma) = {float(jnp.mean(jnp.exp(log_sigma))):.4f}"
+            )
+
+    for i in range(1, int(n_iters)):
+        key, mu, log_sigma, elbo = step(key, mu, log_sigma)
         elbo_history.append(float(elbo))
-        
-        if verbose and (i % max(1, n_iters // 10) == 0 or i == n_iters - 1):
-            print(f"Iter {i:4d}: ELBO = {elbo:.4f}, "
-                  f"||mu|| = {jnp.linalg.norm(mu):.4f}, "
-                  f"mean(sigma) = {jnp.mean(jnp.exp(log_sigma)):.4f}")
-    
-    return mu, log_sigma, jnp.array(elbo_history)
+
+        if verbose and (i % print_every == 0 or i == int(n_iters) - 1):
+            print(
+                f"Iter {i:4d}: ELBO = {float(elbo):.4f}, "
+                f"||mu|| = {float(jnp.linalg.norm(mu)):.4f}, "
+                f"mean(sigma) = {float(jnp.mean(jnp.exp(log_sigma))):.4f}"
+            )
+
+    return mu, log_sigma, jnp.asarray(elbo_history)
 
 
 def sample_gaussian_vi(mu, log_sigma, key, n_samples):

@@ -142,6 +142,21 @@ if MANUAL_TEST_MODE is None:
 else:
     TEST_MODE = bool(MANUAL_TEST_MODE)
 
+# Helpful diagnostics: users sometimes run this from a terminal session where
+# pytest-related env vars are still set.
+if MANUAL_TEST_MODE is None:
+    if (os.environ.get("JAXDENTIFY_TEST", "0") == "1") and (os.environ.get("JAXDENTIFY_FROM_PYTEST", "0") == "1") and ("PYTEST_CURRENT_TEST" not in os.environ):
+        print(
+            "NOTE: TEST_MODE is enabled because Env:JAXDENTIFY_TEST=1 and Env:JAXDENTIFY_FROM_PYTEST=1 are set. "
+            "For a full manual run either unset those env vars or set MANUAL_TEST_MODE=False in this file."
+        )
+print(
+    f"TEST_MODE={TEST_MODE} (MANUAL_TEST_MODE={MANUAL_TEST_MODE}, "
+    f"JAXDENTIFY_TEST={os.environ.get('JAXDENTIFY_TEST','0')}, "
+    f"JAXDENTIFY_FROM_PYTEST={os.environ.get('JAXDENTIFY_FROM_PYTEST','0')}, "
+    f"PYTEST_CURRENT_TEST={'PYTEST_CURRENT_TEST' in os.environ})"
+)
+
 
 print("--------------------")
 print("reference simulation")
@@ -262,7 +277,7 @@ else:
     laplace_mode = "full"
     map_max_iter = None
     map_gtol = 1e-7
-    map_print_every = 10
+    map_print_every = 1
 
 # Use BFGS for Laplace MAP by default (robust for this problem)
 g, lap_info = laplace_gaussian(
@@ -306,6 +321,14 @@ if TEST_MODE:
     elbo_hist = jnp.asarray([])
     print("TEST_MODE: skipping Gaussian VI optimization; using Laplace-initialized Gaussian.")
 else:
+    # Performance note:
+    # - `fit_gaussian_vi` now runs its per-iteration update as a single `jax.jit`'d step.
+    #   This removes Python overhead (calling `value_and_grad` in a Python loop) and makes
+    #   VI much faster after the first compilation.
+    # - Inside the ELBO, `logpi(theta_samples)` is evaluated with `lax.map` instead of
+    #   `vmap`. For implicit solvers / Newton iterations, `vmap` can trigger pathological
+    #   slowdowns by vectorizing control-flow and linear solves; `lax.map` is typically
+    #   the right tradeoff for the small Monte Carlo sample counts used here.
     mu, log_sigma, elbo_hist = fit_gaussian_vi(
         logpi,
         d,
