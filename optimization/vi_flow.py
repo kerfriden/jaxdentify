@@ -42,7 +42,11 @@ def gaussian_vi_elbo(logpi, mu, log_sigma, key, n_samples=10):
     d = mu.shape[0]
     sigma = jnp.exp(log_sigma)
     
-    eps = random.normal(key, shape=(n_samples, d))
+    # Antithetic sampling: reduces gradient variance substantially for small
+    # Monte Carlo sample counts (common in expensive implicit-solver problems).
+    half = (int(n_samples) + 1) // 2
+    eps0 = random.normal(key, shape=(half, d))
+    eps = jnp.concatenate([eps0, -eps0], axis=0)[: int(n_samples)]
     theta_samples = mu + sigma * eps
     
     # NOTE: For many PDE/implicit-solvers, `vmap(logpi)` can become *much* slower than
@@ -72,7 +76,8 @@ def fit_gaussian_vi(
     print_every=None,
     log_sigma_min: float = -20.0,
     log_sigma_max: float = 5.0,
-    grad_clip_norm: float | None = 10.0,
+    grad_clip_norm: float | None = 5.0,
+    optimizer: str = "adam",
     *,
     mu0=None,
     log_sigma0=None,
@@ -98,8 +103,31 @@ def fit_gaussian_vi(
 
     elbo_grad = jax.value_and_grad(elbo_fn, argnums=(0, 1))
 
+    def _adam_init(x):
+        return {
+            "m": jnp.zeros_like(x),
+            "v": jnp.zeros_like(x),
+            "t": jnp.asarray(0, dtype=jnp.int32),
+        }
+
+    def _adam_apply(x, g, st, lr_in, b1=0.9, b2=0.999, eps=1e-8):
+        t = st["t"] + 1
+        m = b1 * st["m"] + (1.0 - b1) * g
+        v = b2 * st["v"] + (1.0 - b2) * (g * g)
+        mhat = m / (1.0 - b1**t)
+        vhat = v / (1.0 - b2**t)
+        x = x + lr_in * mhat / (jnp.sqrt(vhat) + eps)
+        return x, {"m": m, "v": v, "t": t}
+
+    opt = str(optimizer).lower()
+    if opt not in {"adam", "sgd"}:
+        raise ValueError(f"optimizer must be 'adam' or 'sgd', got {optimizer!r}")
+
+    state_mu = _adam_init(mu)
+    state_ls = _adam_init(log_sigma)
+
     @jax.jit
-    def step(key_in, mu_in, log_sigma_in):
+    def step(key_in, mu_in, log_sigma_in, state_mu_in, state_ls_in):
         key_out, k_elbo = random.split(key_in)
         elbo, (grad_mu, grad_log_sigma) = elbo_grad(mu_in, log_sigma_in, k_elbo)
 
@@ -112,8 +140,21 @@ def fit_gaussian_vi(
             grad_mu = grad_mu * scale
             grad_log_sigma = grad_log_sigma * scale
 
-        mu_prop = mu_in + lr * grad_mu
-        log_sigma_prop = log_sigma_in + lr * grad_log_sigma
+        def sgd_update():
+            mu_prop = mu_in + lr * grad_mu
+            log_sigma_prop = log_sigma_in + lr * grad_log_sigma
+            return mu_prop, log_sigma_prop, state_mu_in, state_ls_in
+
+        def adam_update():
+            mu_prop, state_mu_out = _adam_apply(mu_in, grad_mu, state_mu_in, lr)
+            log_sigma_prop, state_ls_out = _adam_apply(log_sigma_in, grad_log_sigma, state_ls_in, lr)
+            return mu_prop, log_sigma_prop, state_mu_out, state_ls_out
+
+        mu_prop, log_sigma_prop, state_mu_out, state_ls_out = jax.lax.cond(
+            opt == "sgd",
+            lambda: sgd_update(),
+            lambda: adam_update(),
+        )
         log_sigma_prop = jnp.clip(log_sigma_prop, a_min=log_sigma_min, a_max=log_sigma_max)
 
         ok = jnp.isfinite(elbo)
@@ -122,8 +163,10 @@ def fit_gaussian_vi(
 
         mu_out = jnp.where(ok, mu_prop, mu_in)
         log_sigma_out = jnp.where(ok, log_sigma_prop, log_sigma_in)
+        state_mu_out = jax.tree.map(lambda a, b: jnp.where(ok, a, b), state_mu_out, state_mu_in)
+        state_ls_out = jax.tree.map(lambda a, b: jnp.where(ok, a, b), state_ls_out, state_ls_in)
         elbo_out = jnp.where(ok, elbo, -jnp.inf)
-        return key_out, mu_out, log_sigma_out, elbo_out
+        return key_out, mu_out, log_sigma_out, state_mu_out, state_ls_out, elbo_out
 
     # Default printing cadence: ~10 updates.
     if print_every is None:
@@ -135,10 +178,10 @@ def fit_gaussian_vi(
 
     # First call compiles the full VI step (can be heavy for implicit solvers).
     if int(n_iters) > 0:
-        key, mu, log_sigma, elbo0 = step(key, mu, log_sigma)
+        key, mu, log_sigma, state_mu, state_ls, elbo0 = step(key, mu, log_sigma, state_mu, state_ls)
         # Synchronize so compilation time isn't hidden.
         (mu.block_until_ready() if hasattr(mu, "block_until_ready") else mu)
-        elbo_history.append(float(elbo0))
+        elbo_history.append(elbo0)
         if verbose:
             print(
                 f"Iter {0:4d}: ELBO = {float(elbo0):.4f}, "
@@ -147,8 +190,8 @@ def fit_gaussian_vi(
             )
 
     for i in range(1, int(n_iters)):
-        key, mu, log_sigma, elbo = step(key, mu, log_sigma)
-        elbo_history.append(float(elbo))
+        key, mu, log_sigma, state_mu, state_ls, elbo = step(key, mu, log_sigma, state_mu, state_ls)
+        elbo_history.append(elbo)
 
         if verbose and (i % print_every == 0 or i == int(n_iters) - 1):
             print(
@@ -157,7 +200,7 @@ def fit_gaussian_vi(
                 f"mean(sigma) = {float(jnp.mean(jnp.exp(log_sigma))):.4f}"
             )
 
-    return mu, log_sigma, jnp.asarray(elbo_history)
+    return mu, log_sigma, (jnp.stack(elbo_history) if elbo_history else jnp.asarray([]))
 
 
 def sample_gaussian_vi(mu, log_sigma, key, n_samples):
