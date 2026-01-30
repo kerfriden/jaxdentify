@@ -120,6 +120,7 @@ def fit_gaussian_vi(
     logpi,
     d,
     key,
+    cov: str = "full",
     n_iters=1000,
     n_samples=10,
     lr=0.01,
@@ -132,14 +133,47 @@ def fit_gaussian_vi(
     *,
     mu0=None,
     log_sigma0=None,
+    chol0: jnp.ndarray | None = None,
 ):
-    """Fit Gaussian VI using gradient ascent on ELBO.
+    """Fit Gaussian VI.
+
+    This is the single entry point for Gaussian VI in this repo.
 
     Args:
-        mu0: Optional initial mean [d]. If None, uses small random init.
-        log_sigma0: Optional initial log-std [d]. If None, starts at zeros.
+        cov: "full" (default) or "mean-field".
+            - "full": q(theta)=N(mu, L L^T) learns correlations.
+            - "mean-field": q(theta)=N(mu, diag(sigma^2)) (faster, no correlations).
+
+    Returns:
+        If cov == "full": (mu, chol, elbo_hist)
+        If cov == "mean-field": (mu, log_sigma, elbo_hist)
     """
-    key, k1, k2 = random.split(key, 3)
+
+    cov_mode = str(cov).lower().replace("_", "-")
+    if cov_mode in {"diag", "diagonal", "mf", "meanfield"}:
+        cov_mode = "mean-field"
+    if cov_mode not in {"full", "mean-field"}:
+        raise ValueError(f"cov must be 'full' or 'mean-field', got {cov!r}")
+
+    if cov_mode == "full":
+        return fit_gaussian_vi_full(
+            logpi,
+            d,
+            key,
+            n_iters=int(n_iters),
+            n_samples=int(n_samples),
+            lr=float(lr),
+            verbose=bool(verbose),
+            print_every=print_every,
+            jitter=1e-6,
+            grad_clip_norm=grad_clip_norm,
+            optimizer=optimizer,
+            mu0=mu0,
+            chol0=chol0,
+        )
+
+    # mean-field (diagonal)
+    key, k1, _ = random.split(key, 3)
     if mu0 is None:
         mu = random.normal(k1, shape=(d,)) * 0.1
     else:
@@ -148,18 +182,14 @@ def fit_gaussian_vi(
         log_sigma = jnp.zeros(d)
     else:
         log_sigma = jnp.asarray(log_sigma0)
-    
-    def elbo_fn(mu, log_sigma, key_in):
-        return gaussian_vi_elbo(logpi, mu, log_sigma, key_in, n_samples)
+
+    def elbo_fn(mu_in, log_sigma_in, key_in):
+        return gaussian_vi_elbo(logpi, mu_in, log_sigma_in, key_in, n_samples)
 
     elbo_grad = jax.value_and_grad(elbo_fn, argnums=(0, 1))
 
     def _adam_init(x):
-        return {
-            "m": jnp.zeros_like(x),
-            "v": jnp.zeros_like(x),
-            "t": jnp.asarray(0, dtype=jnp.int32),
-        }
+        return {"m": jnp.zeros_like(x), "v": jnp.zeros_like(x), "t": jnp.asarray(0, dtype=jnp.int32)}
 
     def _adam_apply(x, g, st, lr_in, b1=0.9, b2=0.999, eps=1e-8):
         t = st["t"] + 1
@@ -182,8 +212,6 @@ def fit_gaussian_vi(
         key_out, k_elbo = random.split(key_in)
         elbo, (grad_mu, grad_log_sigma) = elbo_grad(mu_in, log_sigma_in, k_elbo)
 
-        # Robustness: clip global gradient norm to avoid NaNs/overflow when
-        # differentiating through implicit solvers.
         if grad_clip_norm is not None:
             g2 = jnp.sum(grad_mu * grad_mu) + jnp.sum(grad_log_sigma * grad_log_sigma)
             gnorm = jnp.sqrt(g2 + 1e-32)
@@ -219,18 +247,14 @@ def fit_gaussian_vi(
         elbo_out = jnp.where(ok, elbo, -jnp.inf)
         return key_out, mu_out, log_sigma_out, state_mu_out, state_ls_out, elbo_out
 
-    # Default printing cadence: ~10 updates.
     if print_every is None:
         print_every = max(1, int(n_iters) // 10) if int(n_iters) > 0 else 1
     else:
         print_every = max(1, int(print_every))
 
     elbo_history = []
-
-    # First call compiles the full VI step (can be heavy for implicit solvers).
     if int(n_iters) > 0:
         key, mu, log_sigma, state_mu, state_ls, elbo0 = step(key, mu, log_sigma, state_mu, state_ls)
-        # Synchronize so compilation time isn't hidden.
         (mu.block_until_ready() if hasattr(mu, "block_until_ready") else mu)
         elbo_history.append(elbo0)
         if verbose:
@@ -243,7 +267,6 @@ def fit_gaussian_vi(
     for i in range(1, int(n_iters)):
         key, mu, log_sigma, state_mu, state_ls, elbo = step(key, mu, log_sigma, state_mu, state_ls)
         elbo_history.append(elbo)
-
         if verbose and (i % print_every == 0 or i == int(n_iters) - 1):
             print(
                 f"Iter {i:4d}: ELBO = {float(elbo):.4f}, "
@@ -271,6 +294,8 @@ def fit_gaussian_vi_full(
     chol0: jnp.ndarray | None = None,
 ):
     """Fit a full-covariance Gaussian VI (learns correlations).
+
+    Deprecated: prefer `fit_gaussian_vi(..., cov="full")`.
 
     Returns (mu, chol, elbo_hist), where chol is a lower-triangular matrix.
     """

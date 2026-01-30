@@ -135,7 +135,14 @@ def main():
     
     key, k_fit = random.split(key)
     mu, log_sigma, elbo_history = fit_gaussian_vi(
-        logpi, d, k_fit, n_iters=n_iters, n_samples=n_samples_elbo, lr=lr, verbose=True
+        logpi,
+        d,
+        k_fit,
+        cov="mean-field",
+        n_iters=n_iters,
+        n_samples=n_samples_elbo,
+        lr=lr,
+        verbose=True,
     )
     
     print(f"\n✓ Gaussian VI fitted!")

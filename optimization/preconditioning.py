@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 
 from optimization.optimizers import adamw, bfgs
-from optimization.vi_flow import fit_gaussian_vi, fit_gaussian_vi_full
+from optimization.vi_flow import fit_gaussian_vi
 from jax.scipy.linalg import solve_triangular
 
 
@@ -300,15 +300,20 @@ def gaussian_vi_preconditioner(
     if mu0 is None:
         mu0 = theta0
 
-    cov_mode = str(covariance).lower()
-    if cov_mode not in {"full", "diag"}:
-        raise ValueError(f"covariance must be 'full' or 'diag', got {covariance!r}")
+    cov_mode = str(covariance).lower().replace("_", "-")
+    if cov_mode not in {"full", "diag", "mean-field", "meanfield"}:
+        raise ValueError(
+            f"covariance must be 'full' or 'diag' (aka 'mean-field'), got {covariance!r}"
+        )
+    if cov_mode in {"diag", "meanfield", "mean-field"}:
+        cov_mode = "diag"
 
     if cov_mode == "diag":
         mu, log_sigma, elbo_hist = fit_gaussian_vi(
             logpi,
             d,
             key,
+            cov="mean-field",
             n_iters=int(n_iters),
             n_samples=int(n_samples),
             lr=float(lr),
@@ -327,17 +332,17 @@ def gaussian_vi_preconditioner(
         logdet = jnp.sum(jnp.log(sigma2))
         precond = {"cov": C, "chol": L, "prec": prec, "logdet": logdet, "mean": mu}
     else:
-        mu, L, elbo_hist = fit_gaussian_vi_full(
+        mu, L, elbo_hist = fit_gaussian_vi(
             logpi,
             d,
             key,
+            cov="full",
             n_iters=int(n_iters),
             n_samples=int(n_samples),
             lr=float(lr),
             verbose=bool(verbose),
             mu0=mu0,
             chol0=chol0,
-            jitter=float(max(float(jitter), 1e-12)),
         )
 
         C = L @ L.T

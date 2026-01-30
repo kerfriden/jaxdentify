@@ -17,7 +17,7 @@ from optimization.parameter_mappings import build_param_space, make_loss, to_the
 from optimization.postprocess import theta_to_params_samples, posterior_param_summary
 from optimization.targets import as_logpi
 from optimization.preconditioning import laplace_gaussian
-from optimization.vi_flow import fit_gaussian_vi, sample_gaussian_vi, fit_gaussian_vi_full, sample_gaussian_vi_full
+from optimization.vi_flow import fit_gaussian_vi, sample_gaussian_vi, sample_gaussian_vi_full
 from jax.scipy.linalg import solve as la_solve
 
 
@@ -333,22 +333,25 @@ else:
     #   For implicit solvers / Newton iterations, `vmap` can trigger pathological slowdowns
     #   by vectorizing control-flow and linear solves.
     if VI_FULL_COV:
-        mu, chol, elbo_hist = fit_gaussian_vi_full(
+        mu, chol, elbo_hist = fit_gaussian_vi(
             logpi,
             d,
             k_vi,
+            cov="full",
             n_iters=vi_n_iters,
             n_samples=vi_n_samples,
             lr=vi_lr,
             verbose=not TEST_MODE,
             mu0=mu0,
-            chol0=g["chol"],
+            #chol0=g["chol"],
+            chol0=None
         )
     else:
         mu, log_sigma, elbo_hist = fit_gaussian_vi(
             logpi,
             d,
             k_vi,
+            cov="mean-field",
             n_iters=vi_n_iters,
             n_samples=vi_n_samples,
             lr=vi_lr,
