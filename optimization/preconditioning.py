@@ -25,7 +25,8 @@ import jax
 import jax.numpy as jnp
 
 from optimization.optimizers import adamw, bfgs
-from optimization.vi_flow import fit_gaussian_vi
+from optimization.vi_flow import fit_gaussian_vi, fit_gaussian_vi_full
+from jax.scipy.linalg import solve_triangular
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class LaplaceGaussian(Mapping[str, jnp.ndarray]):
 
     Notes:
       - Returned by `laplace_gaussian(...)` (MAP+Hessian / Laplace)
-      - Also used by `gaussian_vi_gaussian(...)` (diagonal Gaussian VI)
+            - Also used by `gaussian_vi_gaussian(...)` (Gaussian VI; diag or full-cov)
     """
 
     mean: jnp.ndarray
@@ -271,6 +272,7 @@ def gaussian_vi_preconditioner(
     logpi: Callable[[jnp.ndarray], jnp.ndarray],
     theta0: jnp.ndarray,
     *,
+    covariance: Literal["full", "diag"] = "full",
     n_iters: int = 500,
     n_samples: int = 4,
     lr: float = 1e-2,
@@ -278,11 +280,15 @@ def gaussian_vi_preconditioner(
     jitter: float = 1e-12,
     mu0: jnp.ndarray | None = None,
     log_sigma0: jnp.ndarray | None = None,
+    chol0: jnp.ndarray | None = None,
 ) -> Tuple[jnp.ndarray, Dict[str, jnp.ndarray], dict]:
-    """Diagonal Gaussian VI as a Gaussian preconditioner.
+    """Gaussian VI as a Gaussian preconditioner.
 
-    Fits q(theta)=N(mu, diag(sigma^2)) by maximizing the ELBO and returns a
-    preconditioner dict compatible with MALA/HMC preconditioning.
+    Fits q(theta) by maximizing the ELBO and returns a preconditioner dict
+    compatible with MALA/HMC preconditioning.
+
+    - covariance="full": q(theta)=N(mu, L L^T) (captures correlations)
+    - covariance="diag": q(theta)=N(mu, diag(sigma^2)) (mean-field, faster)
 
     This provides an alternative to MAP+Hessian (Laplace) when you prefer not to
     compute Hessians or when MAP optimization is difficult.
@@ -294,36 +300,58 @@ def gaussian_vi_preconditioner(
     if mu0 is None:
         mu0 = theta0
 
-    mu, log_sigma, elbo_hist = fit_gaussian_vi(
-        logpi,
-        d,
-        key,
-        n_iters=int(n_iters),
-        n_samples=int(n_samples),
-        lr=float(lr),
-        verbose=bool(verbose),
-        mu0=mu0,
-        log_sigma0=log_sigma0,
-    )
+    cov_mode = str(covariance).lower()
+    if cov_mode not in {"full", "diag"}:
+        raise ValueError(f"covariance must be 'full' or 'diag', got {covariance!r}")
 
-    # Build diagonal covariance preconditioner
-    sigma2 = jnp.exp(2.0 * log_sigma)
-    sigma2 = jnp.clip(sigma2, a_min=float(jitter))
-    sigma = jnp.sqrt(sigma2)
+    if cov_mode == "diag":
+        mu, log_sigma, elbo_hist = fit_gaussian_vi(
+            logpi,
+            d,
+            key,
+            n_iters=int(n_iters),
+            n_samples=int(n_samples),
+            lr=float(lr),
+            verbose=bool(verbose),
+            mu0=mu0,
+            log_sigma0=log_sigma0,
+        )
 
-    C = jnp.diag(sigma2)
-    L = jnp.diag(sigma)
-    prec = jnp.diag(1.0 / sigma2)
-    logdet = jnp.sum(jnp.log(sigma2))
+        sigma2 = jnp.exp(2.0 * log_sigma)
+        sigma2 = jnp.clip(sigma2, a_min=float(jitter))
+        sigma = jnp.sqrt(sigma2)
 
-    precond = {"cov": C, "chol": L, "prec": prec, "logdet": logdet, "mean": mu}
+        C = jnp.diag(sigma2)
+        L = jnp.diag(sigma)
+        prec = jnp.diag(1.0 / sigma2)
+        logdet = jnp.sum(jnp.log(sigma2))
+        precond = {"cov": C, "chol": L, "prec": prec, "logdet": logdet, "mean": mu}
+    else:
+        mu, L, elbo_hist = fit_gaussian_vi_full(
+            logpi,
+            d,
+            key,
+            n_iters=int(n_iters),
+            n_samples=int(n_samples),
+            lr=float(lr),
+            verbose=bool(verbose),
+            mu0=mu0,
+            chol0=chol0,
+            jitter=float(max(float(jitter), 1e-12)),
+        )
+
+        C = L @ L.T
+        Linv = solve_triangular(L, jnp.eye(d, dtype=L.dtype), lower=True)
+        prec = Linv.T @ Linv
+        logdet = 2.0 * jnp.sum(jnp.log(jnp.diag(L) + 1e-32))
+        precond = {"cov": C, "chol": L, "prec": prec, "logdet": logdet, "mean": mu}
 
     info = {
-        "method": "gaussian_vi",
+        "method": f"gaussian_vi_{cov_mode}",
         "n_iters": int(n_iters),
         "n_samples": int(n_samples),
         "lr": float(lr),
-        "elbo_last": (float(elbo_hist[-1]) if elbo_hist.size else None),
+        "elbo_last": (float(elbo_hist[-1]) if getattr(elbo_hist, "size", 0) else None),
     }
     return mu, precond, info
 
@@ -332,6 +360,7 @@ def gaussian_vi_gaussian(
     logpi: Callable[[jnp.ndarray], jnp.ndarray],
     theta0: jnp.ndarray,
     *,
+    covariance: Literal["full", "diag"] = "full",
     n_iters: int = 500,
     n_samples: int = 4,
     lr: float = 1e-2,
@@ -339,8 +368,9 @@ def gaussian_vi_gaussian(
     jitter: float = 1e-12,
     mu0: jnp.ndarray | None = None,
     log_sigma0: jnp.ndarray | None = None,
+    chol0: jnp.ndarray | None = None,
 ) -> Tuple[LaplaceGaussian, dict]:
-    """Gaussian posterior approximation via diagonal Gaussian VI.
+    """Gaussian posterior approximation via Gaussian VI.
 
     Returns (g, info) where g behaves like a dict with keys
     {mean, cov, chol, prec, logdet} and supports g.sample(key, n=...).
@@ -348,6 +378,7 @@ def gaussian_vi_gaussian(
     _, precond, info = gaussian_vi_preconditioner(
         logpi,
         theta0,
+        covariance=covariance,
         n_iters=n_iters,
         n_samples=n_samples,
         lr=lr,
@@ -355,6 +386,7 @@ def gaussian_vi_gaussian(
         jitter=jitter,
         mu0=mu0,
         log_sigma0=log_sigma0,
+        chol0=chol0,
     )
     g = LaplaceGaussian(
         mean=precond["mean"],

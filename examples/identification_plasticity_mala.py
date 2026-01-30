@@ -308,7 +308,7 @@ print("\nRunning MALA with 2000 steps (equivalent to Flow VI: 4 samples × 500 i
 t0 = time.time()
 # Optional: MAP-Hessian preconditioner (set True to enable)
 USE_PRECOND = True
-PRECOND_METHOD = "laplace"  # "laplace" (MAP+Hessian) or "gaussian_vi" (diag VI)
+PRECOND_METHOD = "laplace"  # "laplace" (MAP+Hessian) or "gaussian_vi" (Gaussian VI; full-cov by default)
 
 if USE_PRECOND:
     if PRECOND_METHOD == "laplace":
