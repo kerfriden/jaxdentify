@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
-#from jax import value_and_grad, jit, lax, tree, jacfwd
-from jax import lax, jit
+from jax import random, lax, jit
 from jax import config
 config.update("jax_enable_x64", True)
 from jax.scipy.linalg import solve as la_solve
@@ -12,8 +11,15 @@ import matplotlib.pyplot as plt
 from simulation.simulate import simulate
 from simulation.algebra import dev_voigt, norm_voigt
 from simulation.newton import newton_implicit_unravel
-from optimization.samplers import *
 from optimization.parameter_mappings import build_param_space, make_loss, to_params
+from optimization.targets import as_logpi
+from optimization.preconditioning import map_hessian_preconditioner, gaussian_vi_preconditioner
+from optimization.inference import run_mala
+from optimization.postprocess import (
+    theta_to_params_samples,
+    posterior_param_summary,
+    posterior_predictive,
+)
 
 
 from functools import partial
@@ -169,9 +175,14 @@ plt.plot(eps11,saved["fields"]["sigma"][:,0])
 plt.grid()
 plt.xlabel(r"$\epsilon_{11}$")
 plt.ylabel(r"$\sigma_{11}$")
-plt.show()
+plt.savefig('plots/plasticity_mala_reference.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_reference.png")
 
-print(saved["logs"]["conv"])
+import numpy as np
+conv = np.asarray(saved["logs"]["conv"])
+u, c = np.unique(conv, return_counts=True)
+print("Newton convergence codes (value: count):", dict(zip(u.tolist(), c.tolist())))
 
 # save reference solution for inverse problem
 true_params = params.copy()
@@ -229,9 +240,6 @@ def loglik(theta):
     noise_std = 1.e6
     #return -(0.5 / (noise_std**2)) * loss(theta)
     return 0.
-    
-
-run_mala = make_mala_unit_gaussian_prior(loglik)
 
 key = random.PRNGKey(0)
 samples, acc_rate = run_mala(
@@ -240,7 +248,7 @@ samples, acc_rate = run_mala(
     eps=0.25,
     n_steps=2000,
     burn=500,
-    thin=1,
+    loglik_theta=loglik,
 )
 
 print("MALA acceptance rate:", float(acc_rate))
@@ -251,10 +259,12 @@ plt.scatter(pts[:,0],pts[:,1], s=10, alpha=0.6)
 plt.xlabel('normalised log(Q)')
 plt.ylabel('normalised log(b)')
 plt.grid()
-plt.show()
+plt.savefig('plots/plasticity_mala_prior_normalized.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_prior_normalized.png")
 
 
-params = map_to_params(space, samples)
+params = theta_to_params_samples(space, samples)
 
 Q = jax.device_get(params["Q"]).ravel()
 b = jax.device_get(params["b"]).ravel()
@@ -265,7 +275,9 @@ plt.xlabel("Q")
 plt.ylabel("b")
 plt.grid(True)
 plt.title('prior sampling')
-plt.show()
+plt.savefig('plots/plasticity_mala_prior.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_prior.png")
 
 plt.figure()
 plt.scatter(jnp.log10(Q), jnp.log10(b), s=10, alpha=0.6)  # x=Q, y=b
@@ -273,7 +285,9 @@ plt.xlabel("Q")
 plt.ylabel("b")
 plt.grid(True)
 plt.title('prior sampling')
-plt.show()
+plt.savefig('plots/plasticity_mala_prior_log.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_prior_log.png")
 
 
 
@@ -287,18 +301,68 @@ def loglik(theta):
     noise_std = 5.e-2
     return -(0.5 / (noise_std**2)) * loss(theta)
 
-run_mala = make_mala_unit_gaussian_prior(loglik)
+logpi = as_logpi(loglik_theta=loglik)
 
 key = random.PRNGKey(0)
-samples, acc_rate= run_mala(
-    key,
-    theta0,
-    eps=5.e-2,
-    n_steps=1000,
-    burn=100,
-    thin=1,
-)
+print("\nRunning MALA with 2000 steps (equivalent to Flow VI: 4 samples × 500 iters)...")
+t0 = time.time()
+# Optional: MAP-Hessian preconditioner (set True to enable)
+USE_PRECOND = True
+PRECOND_METHOD = "laplace"  # "laplace" (MAP+Hessian) or "gaussian_vi" (diag VI)
 
+if USE_PRECOND:
+    if PRECOND_METHOD == "laplace":
+        print("\nComputing MAP + Hessian (Laplace) preconditioner...")
+        theta_map, precond, info = map_hessian_preconditioner(
+            logpi,
+            theta0,
+            map_method="bfgs",
+            mode="full",
+            jitter=1e-6,
+            map_print_every=10,
+        )
+        print("MAP theta:", theta_map)
+        print("Precond info:", info)
+    elif PRECOND_METHOD == "gaussian_vi":
+        print("\nComputing Gaussian VI (diagonal) preconditioner...")
+        mu, precond, info = gaussian_vi_preconditioner(
+            logpi,
+            theta0,
+            n_iters=200,
+            n_samples=2,
+            lr=1e-2,
+            verbose=True,
+            jitter=1e-10,
+            mu0=theta0,
+        )
+        print("VI mu:", mu)
+        print("Precond info:", info)
+    else:
+        raise ValueError("PRECOND_METHOD must be 'laplace' or 'gaussian_vi'")
+    samples, acc_rate = run_mala(
+        key,
+        theta0,
+        eps=3.e-1,
+        n_steps=2000,
+        burn=100,
+        logpi=logpi,
+        precond=precond,
+        use_fast=False,
+    )
+else:
+    samples, acc_rate = run_mala(
+        key,
+        theta0,
+        eps=5.e-2,
+        n_steps=2000,
+        burn=100,
+        logpi=logpi,
+    )
+t1 = time.time()
+total_time = t1 - t0
+
+print(f"\nTotal MALA time: {total_time:.6f} seconds")
+print(f"Time per step: {total_time/2000:.6f} seconds")
 print("MALA acceptance rate:", float(acc_rate))
 
 
@@ -310,9 +374,11 @@ plt.xlabel('normalised log(Q)')
 plt.ylabel('normalised log(b)')
 plt.grid()
 plt.title('posterior sampling - normalised parameter logs')
-plt.show()
+plt.savefig('plots/plasticity_mala_posterior_normalized.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_posterior_normalized.png")
 
-params = map_to_params(space, samples)
+params = theta_to_params_samples(space, samples)
 
 Q = jax.device_get(params["Q"]).ravel()
 b = jax.device_get(params["b"]).ravel()
@@ -323,7 +389,9 @@ plt.xlabel("Q")
 plt.ylabel("b")
 plt.grid(True)
 plt.title('posterior sampling')
-plt.show()
+plt.savefig('plots/plasticity_mala_posterior.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_posterior.png")
 
 
 print("------------------------------------------------")
@@ -349,4 +417,6 @@ plt.plot(sigma_p05,'blue')
 plt.plot(sigma_p95,'red')
 plt.plot(sigma_xx_obs,'black')
 plt.grid()
-plt.show()
+plt.savefig('plots/plasticity_mala_predictive.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved plots/plasticity_mala_predictive.png")

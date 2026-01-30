@@ -16,6 +16,10 @@ def test_example_runs(example):
 
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"  # disable GUI
+    env["JAXDENTIFY_TEST"] = "1"  # allow examples to reduce runtime under pytest
+    env["JAXDENTIFY_FROM_PYTEST"] = "1"  # mark subprocess as launched by pytest
+    env["PYTHONUTF8"] = "1"  # avoid Windows cp1252 UnicodeEncodeError
+    env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
 
     result = subprocess.run(

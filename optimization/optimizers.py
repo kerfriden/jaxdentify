@@ -417,6 +417,8 @@ def adamw(
 
     b1, b2 = betas
 
+    rejected = 0
+
     for t in range(1, int(max_iter) + 1):
         # stop
         gn = float(jnp.linalg.norm(g))
@@ -439,11 +441,11 @@ def adamw(
             gnorm = jnp.linalg.norm(g)
             g = jnp.where(gnorm > clip_norm, g * (clip_norm / (gnorm + 1e-16)), g)
 
-        # NaN/inf guard: if gradient is bad, shrink step + reset moments
-        if not bool(jnp.all(jnp.isfinite(g)) & jnp.isfinite(f)):
-            m = jnp.zeros_like(m)
-            v = jnp.zeros_like(v)
-            lr_t = lr_t * 0.1
+        # Guard: if current state is non-finite, stop (cannot recover reliably)
+        if not bool(jnp.isfinite(f) & jnp.all(jnp.isfinite(g))):
+            if n_display:
+                print(f"[AdamW] non-finite encountered at it {t}: f={float(f)}")
+            break
 
         # Adam moments
         m = b1 * m + (1.0 - b1) * g
@@ -454,17 +456,38 @@ def adamw(
         vhat = v / (1.0 - (b2 ** t))
 
         # AdamW update (decoupled WD)
-        x = x - lr_t * (mhat / (jnp.sqrt(vhat) + eps) + weight_decay * x)
+        x_old = x
+        f_old = f
+        g_old = g
+        x_cand = x_old - lr_t * (mhat / (jnp.sqrt(vhat) + eps) + weight_decay * x_old)
 
-        # eval
-        f, g = loss_fg(x)
+        # eval candidate
+        f_cand, g_cand = loss_fg(x_cand)
         fevals += 1
         gevals += 1
+
+        # If candidate is bad or increases objective a lot, reject and shrink lr.
+        cand_finite = bool(jnp.isfinite(f_cand) & jnp.all(jnp.isfinite(g_cand)))
+        if (not cand_finite) or (float(f_cand) > float(f_old)):
+            rejected += 1
+            # shrink base lr so future lr_t shrinks too
+            lr = float(lr) * 0.5
+            # reset moments to avoid getting stuck with stale direction
+            m = jnp.zeros_like(m)
+            v = jnp.zeros_like(v)
+            # keep current point
+            x, f, g = x_old, f_old, g_old
+            continue
+
+        # accept
+        x, f, g = x_cand, f_cand, g_cand
 
         if n_display and (t % n_display == 0):
             print(f"[AdamW] it {t}: f={float(f):.6e}, ||g||={float(jnp.linalg.norm(g)):.3e}, lr={lr_t:.3e}")
 
     info = {"n_fval": fevals, "n_gval": gevals, "iters": int(t), "f_init": f_init}
+    info["rejected"] = int(rejected)
+    info["lr_final"] = float(lr)
     return x, float(f), info
 
 

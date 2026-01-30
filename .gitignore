@@ -10,5 +10,11 @@ __pycache__/
 # Test cache
 .pytest_cache/
 
+# Jupyter
+.ipynb_checkpoints/
+
+# Local outputs
+plots/
+
 # Virtualenvs
 .venv/
