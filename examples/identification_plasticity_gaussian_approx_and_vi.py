@@ -17,7 +17,7 @@ from optimization.parameter_mappings import build_param_space, make_loss, to_the
 from optimization.postprocess import theta_to_params_samples, posterior_param_summary
 from optimization.targets import as_logpi
 from optimization.preconditioning import laplace_gaussian
-from optimization.vi_flow import fit_gaussian_vi, sample_gaussian_vi
+from optimization.vi_flow import fit_gaussian_vi, sample_gaussian_vi, fit_gaussian_vi_full, sample_gaussian_vi_full
 from jax.scipy.linalg import solve as la_solve
 
 
@@ -304,7 +304,12 @@ print("\n----------------------------")
 print("Gaussian VI")
 print("----------------------------")
 
-vi_n_iters = 5 if TEST_MODE else 200
+# Diagonal (mean-field) Gaussian VI cannot represent correlations.
+# For this (Q, b) identification problem the posterior is often close to Gaussian *with*
+# correlation, so we use a full-covariance Gaussian VI by default.
+VI_FULL_COV = True
+
+vi_n_iters = 5 if TEST_MODE else 1000
 vi_n_samples = 2 if TEST_MODE else 4
 vi_lr = 0.01
 
@@ -322,28 +327,42 @@ if TEST_MODE:
     print("TEST_MODE: skipping Gaussian VI optimization; using Laplace-initialized Gaussian.")
 else:
     # Performance note:
-    # - `fit_gaussian_vi` now runs its per-iteration update as a single `jax.jit`'d step.
-    #   This removes Python overhead (calling `value_and_grad` in a Python loop) and makes
-    #   VI much faster after the first compilation.
-    # - Inside the ELBO, `logpi(theta_samples)` is evaluated with `lax.map` instead of
-    #   `vmap`. For implicit solvers / Newton iterations, `vmap` can trigger pathological
-    #   slowdowns by vectorizing control-flow and linear solves; `lax.map` is typically
-    #   the right tradeoff for the small Monte Carlo sample counts used here.
-    mu, log_sigma, elbo_hist = fit_gaussian_vi(
-        logpi,
-        d,
-        k_vi,
-        n_iters=vi_n_iters,
-        n_samples=vi_n_samples,
-        lr=vi_lr,
-        verbose=not TEST_MODE,
-        mu0=mu0,
-        log_sigma0=log_sigma0,
-    )
+    # - The Gaussian-VI optimizer runs its per-iteration update as a single `jax.jit`'d step
+    #   (so Python overhead is removed after first compilation).
+    # - Inside the ELBO, `logpi(theta_samples)` is evaluated with `lax.map` instead of `vmap`.
+    #   For implicit solvers / Newton iterations, `vmap` can trigger pathological slowdowns
+    #   by vectorizing control-flow and linear solves.
+    if VI_FULL_COV:
+        mu, chol, elbo_hist = fit_gaussian_vi_full(
+            logpi,
+            d,
+            k_vi,
+            n_iters=vi_n_iters,
+            n_samples=vi_n_samples,
+            lr=vi_lr,
+            verbose=not TEST_MODE,
+            mu0=mu0,
+            chol0=g["chol"],
+        )
+    else:
+        mu, log_sigma, elbo_hist = fit_gaussian_vi(
+            logpi,
+            d,
+            k_vi,
+            n_iters=vi_n_iters,
+            n_samples=vi_n_samples,
+            lr=vi_lr,
+            verbose=not TEST_MODE,
+            mu0=mu0,
+            log_sigma0=log_sigma0,
+        )
 
 vi_n = 200 if TEST_MODE else 2000
 key, k_samp = random.split(key)
-theta_vi = sample_gaussian_vi(mu, log_sigma, k_samp, n_samples=vi_n)
+if TEST_MODE:
+    theta_vi = sample_gaussian_vi(mu, log_sigma, k_samp, n_samples=vi_n)
+else:
+    theta_vi = sample_gaussian_vi_full(mu, chol, k_samp, n_samples=vi_n) if VI_FULL_COV else sample_gaussian_vi(mu, log_sigma, k_samp, n_samples=vi_n)
 
 # ----------------------------
 # Compare in parameter space

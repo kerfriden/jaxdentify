@@ -13,6 +13,7 @@ import jax.numpy as jnp
 from jax import random, lax, vmap
 from functools import partial
 import numpy as np
+from jax.scipy.linalg import solve_triangular
 
 
 # ==================== Gaussian VI ====================
@@ -61,6 +62,56 @@ def gaussian_vi_elbo(logpi, mu, log_sigma, key, n_samples=10):
         + 2.0 * jnp.sum(log_sigma)
         + d * jnp.log(2.0 * jnp.pi)
     )
+
+    return jnp.mean(log_p_samples - log_q_samples)
+
+
+def _tril_vec_to_chol(tril_raw: jnp.ndarray, d: int, *, jitter: float = 1e-6) -> jnp.ndarray:
+    """Convert a length d(d+1)/2 vector of raw lower-triangular entries to a valid Cholesky.
+
+    The diagonal is parameterized via softplus for positivity.
+    """
+    tril_raw = jnp.asarray(tril_raw)
+    d = int(d)
+    idx = np.tril_indices(d)
+    L = jnp.zeros((d, d), dtype=tril_raw.dtype).at[idx].set(tril_raw)
+    diag_raw = jnp.diag(L)
+    diag_pos = jax.nn.softplus(diag_raw) + float(jitter)
+    return L.at[jnp.diag_indices(d)].set(diag_pos)
+
+
+def gaussian_vi_elbo_full(
+    logpi,
+    mu: jnp.ndarray,
+    tril_raw: jnp.ndarray,
+    key,
+    *,
+    n_samples: int = 10,
+    jitter: float = 1e-6,
+):
+    """Full-covariance Gaussian VI ELBO: q(theta)=N(mu, L L^T).
+
+    ELBO = E_q[log pi(theta) - log q(theta)]
+
+    Uses a Cholesky factor L (lower-triangular). This can represent correlations, unlike
+    diagonal (mean-field) Gaussian VI.
+    """
+    d = int(mu.shape[0])
+    L = _tril_vec_to_chol(tril_raw, d, jitter=jitter)
+    logdet = jnp.sum(jnp.log(jnp.diag(L) + 1e-32))
+
+    half = (int(n_samples) + 1) // 2
+    eps0 = random.normal(key, shape=(half, d))
+    eps = jnp.concatenate([eps0, -eps0], axis=0)[: int(n_samples)]
+    theta_samples = mu + eps @ L.T
+
+    log_p_samples = lax.map(logpi, theta_samples)
+
+    # log q(theta) for full-cov Gaussian: z = L^{-1} (theta-mu)
+    x = (theta_samples - mu)
+    z = solve_triangular(L, x.T, lower=True).T
+    quad = jnp.sum(z * z, axis=-1)
+    log_q_samples = -0.5 * (d * jnp.log(2.0 * jnp.pi) + quad) - logdet
 
     return jnp.mean(log_p_samples - log_q_samples)
 
@@ -203,12 +254,161 @@ def fit_gaussian_vi(
     return mu, log_sigma, (jnp.stack(elbo_history) if elbo_history else jnp.asarray([]))
 
 
+def fit_gaussian_vi_full(
+    logpi,
+    d: int,
+    key,
+    *,
+    n_iters: int = 1000,
+    n_samples: int = 10,
+    lr: float = 1e-2,
+    verbose: bool = True,
+    print_every: int | None = None,
+    jitter: float = 1e-6,
+    grad_clip_norm: float | None = 5.0,
+    optimizer: str = "adam",
+    mu0: jnp.ndarray | None = None,
+    chol0: jnp.ndarray | None = None,
+):
+    """Fit a full-covariance Gaussian VI (learns correlations).
+
+    Returns (mu, chol, elbo_hist), where chol is a lower-triangular matrix.
+    """
+    d = int(d)
+    key, k1, k2 = random.split(key, 3)
+    mu = (random.normal(k1, shape=(d,)) * 0.1) if mu0 is None else jnp.asarray(mu0)
+
+    n_tril = d * (d + 1) // 2
+    if chol0 is None:
+        tril_raw = jnp.zeros((n_tril,), dtype=mu.dtype)
+    else:
+        L0 = jnp.asarray(chol0)
+        idx = np.tril_indices(d)
+        raw0 = L0[idx]
+        # Invert softplus on diagonal for a good init.
+        diag_idx = np.where(idx[0] == idx[1])[0]
+        diag0 = raw0[diag_idx]
+        diag0 = jnp.clip(diag0 - float(jitter), a_min=1e-12)
+        inv_softplus = lambda y: jnp.log(jnp.expm1(y) + 1e-12)
+        raw0 = raw0.at[diag_idx].set(inv_softplus(diag0))
+        tril_raw = raw0
+
+    def elbo_fn(mu_in, tril_raw_in, key_in):
+        return gaussian_vi_elbo_full(
+            logpi,
+            mu_in,
+            tril_raw_in,
+            key_in,
+            n_samples=int(n_samples),
+            jitter=float(jitter),
+        )
+
+    elbo_grad = jax.value_and_grad(elbo_fn, argnums=(0, 1))
+
+    def _adam_init(x):
+        return {"m": jnp.zeros_like(x), "v": jnp.zeros_like(x), "t": jnp.asarray(0, dtype=jnp.int32)}
+
+    def _adam_apply(x, g, st, lr_in, b1=0.9, b2=0.999, eps=1e-8):
+        t = st["t"] + 1
+        m = b1 * st["m"] + (1.0 - b1) * g
+        v = b2 * st["v"] + (1.0 - b2) * (g * g)
+        mhat = m / (1.0 - b1**t)
+        vhat = v / (1.0 - b2**t)
+        x = x + lr_in * mhat / (jnp.sqrt(vhat) + eps)
+        return x, {"m": m, "v": v, "t": t}
+
+    opt = str(optimizer).lower()
+    if opt not in {"adam", "sgd"}:
+        raise ValueError(f"optimizer must be 'adam' or 'sgd', got {optimizer!r}")
+
+    state_mu = _adam_init(mu)
+    state_tril = _adam_init(tril_raw)
+
+    @jax.jit
+    def step(key_in, mu_in, tril_in, state_mu_in, state_tril_in):
+        key_out, k_elbo = random.split(key_in)
+        elbo, (g_mu, g_tril) = elbo_grad(mu_in, tril_in, k_elbo)
+
+        if grad_clip_norm is not None:
+            g2 = jnp.sum(g_mu * g_mu) + jnp.sum(g_tril * g_tril)
+            gnorm = jnp.sqrt(g2 + 1e-32)
+            scale = jnp.minimum(1.0, (jnp.asarray(grad_clip_norm) / (gnorm + 1e-12)))
+            g_mu = g_mu * scale
+            g_tril = g_tril * scale
+
+        def sgd_update():
+            mu_prop = mu_in + lr * g_mu
+            tril_prop = tril_in + lr * g_tril
+            return mu_prop, tril_prop, state_mu_in, state_tril_in
+
+        def adam_update():
+            mu_prop, state_mu_out = _adam_apply(mu_in, g_mu, state_mu_in, lr)
+            tril_prop, state_tril_out = _adam_apply(tril_in, g_tril, state_tril_in, lr)
+            return mu_prop, tril_prop, state_mu_out, state_tril_out
+
+        mu_prop, tril_prop, state_mu_out, state_tril_out = jax.lax.cond(
+            opt == "sgd",
+            lambda: sgd_update(),
+            lambda: adam_update(),
+        )
+
+        ok = jnp.isfinite(elbo)
+        ok = ok & jnp.all(jnp.isfinite(mu_prop))
+        ok = ok & jnp.all(jnp.isfinite(tril_prop))
+
+        mu_out = jnp.where(ok, mu_prop, mu_in)
+        tril_out = jnp.where(ok, tril_prop, tril_in)
+        state_mu_out = jax.tree.map(lambda a, b: jnp.where(ok, a, b), state_mu_out, state_mu_in)
+        state_tril_out = jax.tree.map(lambda a, b: jnp.where(ok, a, b), state_tril_out, state_tril_in)
+        elbo_out = jnp.where(ok, elbo, -jnp.inf)
+        return key_out, mu_out, tril_out, state_mu_out, state_tril_out, elbo_out
+
+    if print_every is None:
+        print_every = max(1, int(n_iters) // 10) if int(n_iters) > 0 else 1
+    else:
+        print_every = max(1, int(print_every))
+
+    elbo_history = []
+    if int(n_iters) > 0:
+        key, mu, tril_raw, state_mu, state_tril, elbo0 = step(key, mu, tril_raw, state_mu, state_tril)
+        (mu.block_until_ready() if hasattr(mu, "block_until_ready") else mu)
+        elbo_history.append(elbo0)
+        if verbose:
+            L0 = _tril_vec_to_chol(tril_raw, d, jitter=float(jitter))
+            print(
+                f"Iter {0:4d}: ELBO = {float(elbo0):.4f}, "
+                f"||mu|| = {float(jnp.linalg.norm(mu)):.4f}, "
+                f"mean(chol_diag) = {float(jnp.mean(jnp.diag(L0))):.4f}"
+            )
+
+    for i in range(1, int(n_iters)):
+        key, mu, tril_raw, state_mu, state_tril, elbo = step(key, mu, tril_raw, state_mu, state_tril)
+        elbo_history.append(elbo)
+        if verbose and (i % print_every == 0 or i == int(n_iters) - 1):
+            L = _tril_vec_to_chol(tril_raw, d, jitter=float(jitter))
+            print(
+                f"Iter {i:4d}: ELBO = {float(elbo):.4f}, "
+                f"||mu|| = {float(jnp.linalg.norm(mu)):.4f}, "
+                f"mean(chol_diag) = {float(jnp.mean(jnp.diag(L))):.4f}"
+            )
+
+    chol = _tril_vec_to_chol(tril_raw, d, jitter=float(jitter))
+    return mu, chol, (jnp.stack(elbo_history) if elbo_history else jnp.asarray([]))
+
+
 def sample_gaussian_vi(mu, log_sigma, key, n_samples):
     """Sample from fitted Gaussian VI."""
     d = mu.shape[0]
     sigma = jnp.exp(log_sigma)
     eps = random.normal(key, shape=(n_samples, d))
     return mu + sigma * eps
+
+
+def sample_gaussian_vi_full(mu: jnp.ndarray, chol: jnp.ndarray, key, n_samples: int):
+    """Sample from a fitted full-covariance Gaussian VI."""
+    d = int(mu.shape[0])
+    eps = random.normal(key, shape=(int(n_samples), d))
+    return mu + eps @ jnp.asarray(chol).T
 
 
 # ==================== RealNVP Normalizing Flow ====================
