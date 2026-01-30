@@ -22,7 +22,12 @@ def gaussian_vi_elbo(logpi, mu, log_sigma, key, n_samples=10):
     Compute Evidence Lower BOund (ELBO) for Gaussian VI.
     
     q(theta) = N(mu, diag(sigma^2))
-    ELBO = E_q[log p(theta)] - KL(q || p_0)
+    ELBO = E_q[log pi(theta) - log q(theta)]
+
+    IMPORTANT: In this codebase `logpi` is the *log posterior* (log-likelihood + log-prior)
+    constructed via `optimization.targets.as_logpi`. Therefore we must subtract `log q`.
+    Subtracting KL(q || prior) here would *double-count the prior* and makes the fitted
+    Gaussian far too narrow.
     
     Args:
         logpi: Target log-density theta -> R
@@ -44,11 +49,16 @@ def gaussian_vi_elbo(logpi, mu, log_sigma, key, n_samples=10):
     # a mapped loop due to vectorizing control flow / linear solves. For the small
     # MC sample counts used here, `lax.map` is typically the best tradeoff.
     log_p_samples = lax.map(logpi, theta_samples)
-    expected_log_p = jnp.mean(log_p_samples)
-    
-    kl_div = 0.5 * jnp.sum(sigma**2 + mu**2 - 1.0 - 2.0 * log_sigma)
-    
-    return expected_log_p - kl_div
+
+    # log q(theta) for theta = mu + sigma * eps
+    # log q = -0.5 * sum(eps^2 + 2 log_sigma + log(2pi))
+    log_q_samples = -0.5 * (
+        jnp.sum(eps * eps, axis=-1)
+        + 2.0 * jnp.sum(log_sigma)
+        + d * jnp.log(2.0 * jnp.pi)
+    )
+
+    return jnp.mean(log_p_samples - log_q_samples)
 
 
 def fit_gaussian_vi(
