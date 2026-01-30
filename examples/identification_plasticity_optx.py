@@ -1,3 +1,5 @@
+import os
+
 import jax
 import jax.numpy as jnp
 #from jax import value_and_grad, jit, lax, tree, jacfwd
@@ -19,9 +21,26 @@ from functools import partial
 
 
 
-
-import jax
 print(jax.devices())
+
+
+# ----------------
+# Test-mode control
+# ----------------
+MANUAL_TEST_MODE: bool | None = None
+_FROM_PYTEST = os.environ.get("JAXDENTIFY_FROM_PYTEST", "0") == "1" or ("PYTEST_CURRENT_TEST" in os.environ)
+if MANUAL_TEST_MODE is None:
+    TEST_MODE = (os.environ.get("JAXDENTIFY_TEST", "0") == "1") and _FROM_PYTEST
+else:
+    TEST_MODE = bool(MANUAL_TEST_MODE)
+
+try:
+    import optimistix as optx  # type: ignore
+
+    _HAS_OPTIMISTIX = True
+except Exception:
+    optx = None
+    _HAS_OPTIMISTIX = False
 
 def newton_optx(
     residual_fn,
@@ -38,7 +57,10 @@ def newton_optx(
       - nondiff_args: not differentiable (strain history, old state, etc.)
     """
 
-    import optimistix as optx  
+    if not _HAS_OPTIMISTIX:
+        raise ModuleNotFoundError(
+            "optimistix is not installed. Install it to use newton_optx, or run with the built-in solver."
+        )
 
     # Freeze nondiff arguments so JAX never differentiates them
     nondiff_args_static = jax.tree.map(lax.stop_gradient, nondiff_args)
@@ -170,17 +192,25 @@ def constitutive_update_fn(state_old, step_load, params, alg = {"tol" :1e-8, "ab
         "gamma":    jnp.asarray(0.0, dtype=dtype),
         "eps_cstr": jnp.asarray(eps_cstr_trial, dtype=dtype),  # good initial guess
     }
-    if 0: # own solver
-        x_sol, iters = newton_implicit_unravel(
-            residuals, x0, (epsilon, state_old, params, sigma_idx),
-            tol=alg["tol"], abs_tol=alg["abs_tol"], max_iter=alg["max_it"]
-        )
-    else: # optimix
-        nondiff_args = (epsilon, state_old, sigma_idx)
-        diff_args = params
+    nondiff_args = (epsilon, state_old, sigma_idx)
+    diff_args = params
+
+    use_optx = (_HAS_OPTIMISTIX and (not TEST_MODE))
+    if use_optx:
         x_sol, iters = newton_optx(
-            residuals,  # the new residual with split args
-            x0,diff_args,nondiff_args,
+            residuals,
+            x0,
+            diff_args,
+            nondiff_args,
+            tol=alg["tol"],
+            abs_tol=alg["abs_tol"],
+            max_iter=alg["max_it"],
+        )
+    else:
+        x_sol, iters = newton_implicit_unravel(
+            residuals,
+            x0,
+            (diff_args, nondiff_args),
             tol=alg["tol"],
             abs_tol=alg["abs_tol"],
             max_iter=alg["max_it"],
@@ -208,7 +238,7 @@ params = {
 }
 
 # strain history
-n_ts = 100
+n_ts = 20 if TEST_MODE else 100
 ts = jnp.linspace(0., 1., n_ts)
 eps_xx = 4.0 * jnp.sin( ts * 30.0)
 epsilon_ts = (jnp.zeros((len(ts), 6))
@@ -230,7 +260,13 @@ plt.plot(eps11,saved["fields"]["sigma"][:,0])
 plt.grid()
 plt.xlabel(r"$F_{11}$")
 plt.ylabel(r"$\sigma_{11}$")
-plt.show()
+
+os.makedirs("plots", exist_ok=True)
+plt.savefig("plots/plasticity_optx_reference.png", dpi=150, bbox_inches="tight")
+if not TEST_MODE:
+    plt.show()
+plt.close()
+print("Saved plots/plasticity_optx_reference.png")
 
 print(saved["logs"]["conv"])
 
@@ -313,7 +349,11 @@ plt.plot(load_ts['epsilon'][:,0],sigma_xx_obs,'black',label=r'$\hat{\sigma}_{11}
 plt.plot(load_ts['epsilon'][:,0],sigma_init,'green',label=r'$\hat{\sigma}_{11}$ (initial)')
 plt.legend(loc='best')
 plt.grid()
-plt.show()
+plt.savefig("plots/plasticity_optx_fit.png", dpi=150, bbox_inches="tight")
+if not TEST_MODE:
+    plt.show()
+plt.close()
+print("Saved plots/plasticity_optx_fit.png")
 
 print("--------------")
 print("test CPU times")
